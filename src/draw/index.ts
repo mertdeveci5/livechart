@@ -1,4 +1,4 @@
-import type { LivelinePalette, ChartLayout, LivelinePoint, Momentum, ReferenceLine, OrderbookData, DegenOptions, CandlePoint } from '../types'
+import type { LivelinePalette, ChartLayout, LivelinePoint, Momentum, ReferenceLine, OrderbookData, DegenOptions, CandlePoint, BarPoint } from '../types'
 import { drawGrid, type GridState } from './grid'
 import { drawLine } from './line'
 import { drawDot, drawArrows, drawSimpleDot, drawMultiDot } from './dot'
@@ -9,6 +9,8 @@ import { drawTimeAxis, type TimeAxisState } from './timeAxis'
 import { drawOrderbook, type OrderbookState } from './orderbook'
 import { drawParticles, spawnOnSwing, type ParticleState } from './particles'
 import { drawCandlesticks, drawClosePrice, drawCandleCrosshair, drawLineModeCrosshair } from './candlestick'
+import { drawBars } from './bars'
+import { drawGauge } from './gauge'
 import { drawEmpty } from './empty'
 
 // Constants
@@ -663,5 +665,175 @@ export function drawCandleFrame(
         opts.scrubAmount,
       )
     }
+  }
+}
+
+// ─── Bars draw orchestration ───────────────────────────────────────────────
+
+export interface BarsDrawOptions {
+  bars: BarPoint[]
+  barWidthSecs: number
+  liveBar?: BarPoint
+  liveTime: number
+  liveBirthAlpha: number
+  chartReveal: number
+  now_ms: number
+  now: number
+  showGrid: boolean
+  scrubAmount: number
+  hoverX: number | null
+  hoveredBar: BarPoint | null
+  hoverTime: number | null
+  formatValue: (v: number) => string
+  formatTime: (t: number) => string
+  gridState: GridState
+  timeAxisState: TimeAxisState
+  dt: number
+  targetWindowSecs: number
+  loadingAlpha: number
+  showEmptyOverlay: boolean
+  emptyText?: string
+}
+
+/**
+ * Bars draw orchestrator — grid, baseline-anchored bars, time axis, crosshair.
+ * Mirrors the candle frame's reveal choreography: bars grow from the baseline
+ * as chartReveal ramps.
+ */
+export function drawBarsFrame(
+  ctx: CanvasRenderingContext2D,
+  layout: ChartLayout,
+  palette: LivelinePalette,
+  opts: BarsDrawOptions,
+): void {
+  const { w, h, pad, chartW, chartH } = layout
+  const reveal = opts.chartReveal
+
+  const revealRamp = (start: number, end: number) => {
+    const t = Math.max(0, Math.min(1, (reveal - start) / (end - start)))
+    return t * t * (3 - 2 * t)
+  }
+
+  // 1. Grid — fades in (25%–60% of reveal)
+  const gridAlpha = revealRamp(0.25, 0.6)
+  if (opts.showGrid && gridAlpha > 0.01) {
+    ctx.save()
+    if (gridAlpha < 1) ctx.globalAlpha = gridAlpha
+    drawGrid(ctx, layout, palette, opts.formatValue, opts.gridState, opts.dt)
+    ctx.restore()
+  }
+
+  // 2. Bars — heights scale with smoothstepped reveal (grow from baseline)
+  const heightScale = reveal * reveal * (3 - 2 * reveal)
+  const barsAlpha = reveal < 1 ? 0.15 + 0.85 * reveal : 1
+  if (barsAlpha > 0.01) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(pad.left - 1, pad.top, chartW + 2, chartH)
+    ctx.clip()
+    if (barsAlpha < 1) ctx.globalAlpha = barsAlpha
+    drawBars(
+      ctx, layout, palette,
+      opts.bars, opts.barWidthSecs,
+      opts.liveTime, opts.now_ms,
+      opts.scrubAmount > 0.05 ? opts.hoverX : null, opts.scrubAmount,
+      opts.liveBirthAlpha, heightScale,
+    )
+    ctx.restore()
+  }
+
+  // 3. Time axis — same timing as grid
+  const timeAlpha = revealRamp(0.25, 0.6)
+  if (timeAlpha > 0.01) {
+    ctx.save()
+    if (timeAlpha < 1) ctx.globalAlpha = timeAlpha
+    drawTimeAxis(ctx, layout, palette, opts.targetWindowSecs, opts.targetWindowSecs, opts.formatTime, opts.timeAxisState, opts.dt)
+    ctx.restore()
+  }
+
+  // 4. Left edge fade — gradient erase
+  ctx.save()
+  ctx.globalCompositeOperation = 'destination-out'
+  const fadeGrad = ctx.createLinearGradient(pad.left, 0, pad.left + FADE_EDGE_WIDTH, 0)
+  fadeGrad.addColorStop(0, 'rgba(0, 0, 0, 1)')
+  fadeGrad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = fadeGrad
+  ctx.fillRect(0, 0, pad.left + FADE_EDGE_WIDTH, h)
+  ctx.restore()
+
+  // 5. Reverse morph empty overlay
+  if (opts.showEmptyOverlay) {
+    const bgAlpha = 1 - opts.chartReveal
+    if (bgAlpha > 0.01) {
+      const bgEmptyAlpha = (1 - opts.loadingAlpha) * bgAlpha
+      if (bgEmptyAlpha > 0.01) {
+        drawEmpty(ctx, w, h, pad, palette, bgEmptyAlpha, opts.now_ms, true, opts.emptyText)
+      }
+    }
+  }
+
+  // 6. Crosshair — value + time tooltip, only when mostly revealed
+  if (opts.chartReveal > 0.7 && opts.hoveredBar && opts.hoverX !== null && opts.scrubAmount > 0.01) {
+    drawLineModeCrosshair(
+      ctx, layout, palette,
+      opts.hoverX, opts.hoveredBar.value, opts.hoverTime ?? 0,
+      opts.formatValue, opts.formatTime,
+      opts.scrubAmount,
+    )
+  }
+}
+
+// ─── Gauge draw orchestration ──────────────────────────────────────────────
+
+export interface GaugeDrawOptions {
+  /** Normalized smoothed value 0–1 */
+  t: number
+  chartReveal: number
+  valueText: string
+  minText: string
+  maxText: string
+  now_ms: number
+  showPulse: boolean
+  loadingAlpha: number
+}
+
+/**
+ * Gauge draw orchestrator — radial arc for a single live value.
+ * No grid, no time axis, no crosshair. Loading shows a breathing arc.
+ */
+export function drawGaugeFrame(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  pad: { top: number; right: number; bottom: number; left: number },
+  palette: LivelinePalette,
+  opts: GaugeDrawOptions,
+): void {
+  // Real gauge (handles its own reveal ramp internally)
+  drawGauge(ctx, w, h, pad, palette, {
+    t: opts.t,
+    chartReveal: opts.chartReveal,
+    valueText: opts.valueText,
+    minText: opts.minText,
+    maxText: opts.maxText,
+    now_ms: opts.now_ms,
+    showPulse: opts.showPulse,
+  })
+
+  // Loading: breathing arc sweep overlaid on top, fading out with loadingAlpha
+  if (opts.loadingAlpha > 0.01) {
+    const breath = 0.5 + Math.sin(opts.now_ms * 0.002) * 0.25
+    ctx.save()
+    ctx.globalAlpha = opts.loadingAlpha
+    drawGauge(ctx, w, h, pad, palette, {
+      t: breath,
+      chartReveal: 1,
+      valueText: '',
+      minText: '',
+      maxText: '',
+      now_ms: opts.now_ms,
+      showPulse: false,
+    })
+    ctx.restore()
   }
 }

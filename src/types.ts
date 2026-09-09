@@ -109,8 +109,8 @@ export interface LivelineProps {
   pulse?: boolean          // Pulsing ring on live dot (default: true)
   lineWidth?: number       // Stroke width of the main line in px (default: 2)
 
-  // Candlestick mode
-  mode?: 'line' | 'candle'       // Chart type (default: 'line')
+  // Chart type
+  mode?: 'line' | 'candle' | 'bars' | 'gauge'  // (default: 'line')
   candles?: CandlePoint[]         // OHLC candle data (required when mode='candle')
   candleWidth?: number            // Seconds per candle (required when mode='candle')
   liveCandle?: CandlePoint        // Current live candle with real-time OHLC
@@ -120,6 +120,15 @@ export interface LivelineProps {
   onModeChange?: (mode: 'line' | 'candle') => void  // Built-in toggle callback
   onSeriesToggle?: (id: string, visible: boolean) => void  // Multi-series toggle callback
   seriesToggleCompact?: boolean  // Show only colored dots (no labels) in series toggle (default: false)
+
+  // Bars mode
+  bars?: BarPoint[]               // Committed bar buckets (required when mode='bars')
+  barWidth?: number               // Seconds per bar bucket (required when mode='bars')
+  liveBar?: BarPoint              // Current in-progress bar, updated every tick
+
+  // Gauge mode
+  min?: number                    // Gauge minimum value (default: 0)
+  max?: number                    // Gauge maximum value (default: 100)
 
   className?: string
   style?: CSSProperties
@@ -131,6 +140,11 @@ export interface CandlePoint {
   high: number
   low: number
   close: number
+}
+
+export interface BarPoint {
+  time: number   // unix seconds — bar bucket start time
+  value: number
 }
 
 export interface LivelinePalette {

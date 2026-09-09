@@ -1,11 +1,11 @@
 import { useRef, useEffect, useCallback } from 'react'
-import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint } from './types'
+import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint } from './types'
 import { lerp } from './math/lerp'
-import { computeRange } from './math/range'
+import { computeRange, computeBarsRange, normalizeGaugeValue } from './math/range'
 import { detectMomentum } from './math/momentum'
 import { interpolateAtTime } from './math/interpolate'
 import { getDpr, applyDpr } from './canvas/dpr'
-import { drawFrame, drawCandleFrame, drawMultiFrame, FADE_EDGE_WIDTH } from './draw'
+import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, FADE_EDGE_WIDTH } from './draw'
 import type { MultiSeriesEntry } from './draw'
 import { drawLoading } from './draw/loading'
 import { drawEmpty } from './draw/empty'
@@ -45,14 +45,23 @@ interface EngineConfig {
   paused?: boolean
   emptyText?: string
 
-  // Candlestick mode
-  mode: 'line' | 'candle'
+  // Chart type
+  mode: 'line' | 'candle' | 'bars' | 'gauge'
   candles?: CandlePoint[]
   candleWidth?: number
   liveCandle?: CandlePoint
   lineMode?: boolean
   lineData?: LivelinePoint[]
   lineValue?: number
+
+  // Bars mode
+  bars?: BarPoint[]
+  barWidth?: number
+  liveBar?: BarPoint
+
+  // Gauge mode
+  min?: number
+  max?: number
 
   // Multi-series mode
   multiSeries?: Array<{
@@ -432,20 +441,20 @@ function computeCandleRange(
   return { min: min - margin, max: max + margin }
 }
 
-function candleAtX(
-  candles: CandlePoint[],
+function pointAtX<T extends { time: number }>(
+  items: T[],
   hoverX: number,
-  candleWidth: number,
+  itemWidth: number,
   layout: ChartLayout,
-): CandlePoint | null {
+): T | null {
   const time = layout.leftEdge + ((hoverX - layout.pad.left) / layout.chartW) * (layout.rightEdge - layout.leftEdge)
   let lo = 0
-  let hi = candles.length - 1
+  let hi = items.length - 1
   while (lo <= hi) {
     const mid = (lo + hi) >> 1
-    const c = candles[mid]
+    const c = items[mid]
     if (time < c.time) hi = mid - 1
-    else if (time >= c.time + candleWidth) lo = mid + 1
+    else if (time >= c.time + itemWidth) lo = mid + 1
     else return c
   }
   return null
@@ -497,8 +506,8 @@ function updateCandleRange(
   }
 }
 
-/** Candle window transition — uses candle data instead of line points. */
-function updateCandleWindowTransition(
+/** Bucketed-data window transition (candles, bars) — generic over item type. */
+function updateCandleWindowTransition<T extends { time: number }>(
   targetWindowSecs: number,
   wt: { from: number; to: number; startMs: number; rangeFromMin: number; rangeFromMax: number; rangeToMin: number; rangeToMax: number },
   displayWindow: number,
@@ -506,10 +515,11 @@ function updateCandleWindowTransition(
   displayMax: number,
   now_ms: number,
   now: number,
-  candles: CandlePoint[],
-  liveCandle: CandlePoint | undefined,
-  candleWidth: number,
+  items: T[],
+  live: T | undefined,
+  itemWidth: number,
   buffer: number,
+  rangeFn: (items: T[]) => { min: number; max: number },
 ): { windowSecs: number; windowTransProgress: number } {
   if (wt.to !== targetWindowSecs) {
     wt.from = displayWindow
@@ -519,17 +529,17 @@ function updateCandleWindowTransition(
     wt.rangeFromMax = displayMax
     const targetRightEdge = now + targetWindowSecs * buffer
     const targetLeftEdge = targetRightEdge - targetWindowSecs
-    const targetVisible: CandlePoint[] = []
-    for (const c of candles) {
-      if (c.time + candleWidth >= targetLeftEdge && c.time <= targetRightEdge) {
+    const targetVisible: T[] = []
+    for (const c of items) {
+      if (c.time + itemWidth >= targetLeftEdge && c.time <= targetRightEdge) {
         targetVisible.push(c)
       }
     }
-    if (liveCandle && liveCandle.time + candleWidth >= targetLeftEdge && liveCandle.time <= targetRightEdge) {
-      targetVisible.push(liveCandle)
+    if (live && live.time + itemWidth >= targetLeftEdge && live.time <= targetRightEdge) {
+      targetVisible.push(live)
     }
     if (targetVisible.length > 0) {
-      const tr = computeCandleRange(targetVisible)
+      const tr = rangeFn(targetVisible)
       wt.rangeToMin = tr.min
       wt.rangeToMax = tr.max
     }
@@ -655,6 +665,14 @@ export function useLivelineEngine(
   const lastLiveRef = useRef<CandlePoint | null>(null)
   const lastLineDataStashRef = useRef<LivelinePoint[]>([])
   const lastLineValueStashRef = useRef<number | undefined>(undefined)
+
+  // --- Bars mode refs ---
+  const displayBarRef = useRef<BarPoint | null>(null)
+  const barBirthAlphaRef = useRef(1)
+  const pausedBarsRef = useRef<BarPoint[] | null>(null)
+  const pausedLiveBarRef = useRef<BarPoint | null>(null)
+  const lastBarsRef = useRef<BarPoint[]>([])
+  const lastLiveBarRef = useRef<BarPoint | null>(null)
 
   // Create badge DOM elements (once, appended to container)
   useEffect(() => {
@@ -824,6 +842,8 @@ export function useLivelineEngine(
 
     // --- Mode-specific pause data snapshot ---
     const isCandle = cfg.mode === 'candle'
+    const isBars = cfg.mode === 'bars'
+    const isGauge = cfg.mode === 'gauge'
 
     if (isCandle) {
       if (cfg.paused && pausedCandlesRef.current === null && (cfg.candles?.length ?? 0) > 0) {
@@ -837,6 +857,15 @@ export function useLivelineEngine(
         pausedLiveRef.current = null
         pausedLineDataRef.current = null
         pausedLineValueRef.current = null
+      }
+    } else if (isBars) {
+      if (cfg.paused && pausedBarsRef.current === null && (cfg.bars?.length ?? 0) > 0) {
+        pausedBarsRef.current = cfg.bars!.slice()
+        pausedLiveBarRef.current = cfg.liveBar ?? null
+      }
+      if (!cfg.paused) {
+        pausedBarsRef.current = null
+        pausedLiveBarRef.current = null
       }
     } else if (cfg.isMultiSeries && cfg.multiSeries) {
       if (cfg.paused && pausedMultiDataRef.current === null) {
@@ -858,10 +887,14 @@ export function useLivelineEngine(
       }
     }
 
-    const points = isCandle ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
+    const points = (isCandle || isBars || isGauge) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
     const effectiveCandles = isCandle ? (pausedCandlesRef.current ?? (cfg.candles ?? [])) : ([] as CandlePoint[])
+    const effectiveBars = isBars ? (pausedBarsRef.current ?? (cfg.bars ?? [])) : ([] as BarPoint[])
     const hasMultiData = cfg.isMultiSeries && cfg.multiSeries ? cfg.multiSeries.some(s => s.data.length >= 2) : false
-    const hasData = isCandle ? effectiveCandles.length >= 2 : (hasMultiData || points.length >= 2)
+    const hasData = isGauge ? true
+      : isCandle ? effectiveCandles.length >= 2
+      : isBars ? (effectiveBars.length >= 1 || cfg.liveBar != null || pausedLiveBarRef.current != null)
+      : (hasMultiData || points.length >= 2)
     const pad = cfg.padding
     const chartH = h - pad.top - pad.bottom
 
@@ -920,6 +953,10 @@ export function useLivelineEngine(
     if (isCandle) {
       useStash = !hasData && chartReveal > 0.005 && lastCandlesRef.current.length > 0
       // Candle stash updated inside candle pipeline after computing visible
+    } else if (isBars) {
+      useStash = !hasData && chartReveal > 0.005 && lastBarsRef.current.length > 0
+    } else if (isGauge) {
+      useStash = false
     } else {
       // Multi-series stash
       useMultiStash = !hasData && chartReveal > 0.005 && lastMultiSeriesRef.current.length > 0
@@ -1085,6 +1122,7 @@ export function useLivelineEngine(
         cfg.windowSecs, transition, displayWindowRef.current,
         displayMinRef.current, displayMaxRef.current,
         now_ms, now, effectiveCandles, rawLive, candleWidthSecs, candleBuffer,
+        computeCandleRange,
       )
       displayWindowRef.current = windowResult.windowSecs
       const windowSecs = windowResult.windowSecs
@@ -1246,7 +1284,7 @@ export function useLivelineEngine(
       let hoveredCandle: CandlePoint | null = null
       let isActiveHover = false
       if (hoverPx !== null && hoverPx >= pad.left && hoverPx <= w - pad.right) {
-        hoveredCandle = candleAtX(effectiveVisible, hoverPx, displayCandleWidth, layout)
+        hoveredCandle = pointAtX(effectiveVisible, hoverPx, displayCandleWidth, layout)
         if (hoveredCandle) isActiveHover = true
       }
       const scrubTarget = isActiveHover ? 1 : 0
@@ -1261,7 +1299,7 @@ export function useLivelineEngine(
       if (!isActiveHover && scrubAmount > 0 && lastHoverRef.current) {
         drawHoverX = lastHoverRef.current.x
         drawHoverTime = lastHoverRef.current.time
-        drawHoverCandle = candleAtX(effectiveVisible, lastHoverRef.current.x, displayCandleWidth, layout)
+        drawHoverCandle = pointAtX(effectiveVisible, lastHoverRef.current.x, displayCandleWidth, layout)
       } else if (isActiveHover && hoverPx !== null) {
         drawHoverTime = layout.leftEdge + ((hoverPx - pad.left) / chartW) * (layout.rightEdge - layout.leftEdge)
         lastHoverRef.current = { x: hoverPx, value: hoveredCandle?.close ?? 0, time: drawHoverTime }
@@ -1440,6 +1478,208 @@ export function useLivelineEngine(
         } else {
           badgeRef.current.container.style.display = 'none'
         }
+      }
+
+    } else if (isBars) {
+      // ═══════════════════════════════════════════════════════
+      // BARS MODE PIPELINE
+      // ═══════════════════════════════════════════════════════
+
+      const barsBuffer = cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE
+
+      if (hasData) frozenNowRef.current = Date.now() / 1000 - timeDebtRef.current
+      const now = (hasData || chartReveal < 0.005)
+        ? Date.now() / 1000 - timeDebtRef.current
+        : frozenNowRef.current
+      const rawLive = pausedBarsRef.current ? (pausedLiveBarRef.current ?? undefined) : cfg.liveBar
+      const barWidthSecs = cfg.barWidth ?? 1
+
+      // --- Window transition ---
+      const transition = windowTransitionRef.current
+      const windowResult = updateCandleWindowTransition(
+        cfg.windowSecs, transition, displayWindowRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        now_ms, now, effectiveBars, rawLive, barWidthSecs, barsBuffer,
+        (items) => computeBarsRange(items),
+      )
+      displayWindowRef.current = windowResult.windowSecs
+      const windowSecs = windowResult.windowSecs
+      const windowTransProgress = windowResult.windowTransProgress
+      const isWindowTransitioning = transition.startMs > 0
+
+      const rightEdge = now + windowSecs * barsBuffer
+      const leftEdge = rightEdge - windowSecs
+
+      // --- Live bar value lerp ---
+      let smoothLive: BarPoint | undefined
+      if (rawLive) {
+        const prev = displayBarRef.current
+        if (!prev || prev.time !== rawLive.time) {
+          displayBarRef.current = { time: rawLive.time, value: rawLive.value }
+          barBirthAlphaRef.current = 0
+        } else {
+          displayBarRef.current!.value = lerp(prev.value, rawLive.value, CANDLE_LERP_SPEED, pausedDt)
+        }
+        barBirthAlphaRef.current = lerp(barBirthAlphaRef.current, 1, 0.2, pausedDt)
+        if (barBirthAlphaRef.current > 0.99) barBirthAlphaRef.current = 1
+        smoothLive = displayBarRef.current!
+      } else {
+        displayBarRef.current = null
+        barBirthAlphaRef.current = 1
+      }
+
+      // --- Build visible bars ---
+      const visible: BarPoint[] = []
+      for (const b of effectiveBars) {
+        if (b.time + barWidthSecs >= leftEdge && b.time <= rightEdge) visible.push(b)
+      }
+      if (smoothLive && smoothLive.time + barWidthSecs >= leftEdge && smoothLive.time <= rightEdge) {
+        visible.push(smoothLive)
+      }
+
+      // Stash for reverse morph
+      if (hasData) {
+        lastBarsRef.current = visible
+        lastLiveBarRef.current = smoothLive ?? null
+      }
+      const effectiveVisible = useStash ? lastBarsRef.current : visible
+      const effectiveLive = useStash ? (lastLiveBarRef.current ?? undefined) : smoothLive
+
+      // --- Range (zero-baseline anchored) ---
+      const chartW = w - pad.left - pad.right
+      const computed = effectiveVisible.length > 0
+        ? computeBarsRange(effectiveVisible)
+        : { min: displayMinRef.current, max: displayMaxRef.current }
+      const rangeResult = updateCandleRange(
+        computed, rangeInitedRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        isWindowTransitioning, windowTransProgress, transition,
+        chartH, pausedDt,
+      )
+      rangeInitedRef.current = rangeResult.rangeInited
+      displayMinRef.current = rangeResult.displayMin
+      displayMaxRef.current = rangeResult.displayMax
+      const { minVal, maxVal, valRange } = rangeResult
+
+      const layout: ChartLayout = {
+        w, h, pad,
+        chartW, chartH,
+        leftEdge, rightEdge,
+        minVal, maxVal, valRange,
+        toX: (t: number) => pad.left + ((t - leftEdge) / (rightEdge - leftEdge)) * chartW,
+        toY: (v: number) => pad.top + (1 - (v - minVal) / valRange) * chartH,
+      }
+
+      // --- Hover + scrub ---
+      const hoverPx = hoverXRef.current
+      let hoveredBar: BarPoint | null = null
+      let isActiveHover = false
+      if (hoverPx !== null && hoverPx >= pad.left && hoverPx <= w - pad.right) {
+        hoveredBar = pointAtX(effectiveVisible, hoverPx, barWidthSecs, layout)
+        if (hoveredBar) isActiveHover = true
+      }
+      const scrubTarget = isActiveHover ? 1 : 0
+      scrubAmountRef.current = lerp(scrubAmountRef.current, scrubTarget, 0.12, dt)
+      if (scrubAmountRef.current < 0.01) scrubAmountRef.current = 0
+      if (scrubAmountRef.current > 0.99) scrubAmountRef.current = 1
+      const scrubAmount = scrubAmountRef.current
+
+      let drawHoverX = hoverPx
+      let drawHoverTime = 0
+      let drawHoverBar: BarPoint | null = hoveredBar
+      if (!isActiveHover && scrubAmount > 0 && lastHoverRef.current) {
+        drawHoverX = lastHoverRef.current.x
+        drawHoverTime = lastHoverRef.current.time
+        drawHoverBar = pointAtX(effectiveVisible, lastHoverRef.current.x, barWidthSecs, layout)
+      } else if (isActiveHover && hoverPx !== null) {
+        drawHoverTime = layout.leftEdge + ((hoverPx - pad.left) / chartW) * (layout.rightEdge - layout.leftEdge)
+        lastHoverRef.current = { x: hoverPx, value: hoveredBar?.value ?? 0, time: drawHoverTime }
+      }
+
+      // --- Draw ---
+      drawBarsFrame(ctx, layout, cfg.palette, {
+        bars: effectiveVisible,
+        barWidthSecs,
+        liveBar: effectiveLive,
+        liveTime: effectiveLive?.time ?? -1,
+        liveBirthAlpha: barBirthAlphaRef.current,
+        chartReveal,
+        now_ms,
+        now,
+        showGrid: cfg.showGrid,
+        scrubAmount,
+        hoverX: drawHoverX,
+        hoveredBar: drawHoverBar,
+        hoverTime: drawHoverTime,
+        formatValue: cfg.formatValue,
+        formatTime: cfg.formatTime,
+        gridState: gridStateRef.current,
+        timeAxisState: timeAxisStateRef.current,
+        dt: pausedDt,
+        targetWindowSecs: cfg.windowSecs,
+        loadingAlpha,
+        showEmptyOverlay: !(cfg.loading ?? false) && loadingAlpha < 0.01,
+        emptyText: cfg.emptyText,
+      })
+
+      // Badge — tracks the live bar value
+      if (badgeRef.current) {
+        if (cfg.showBadge && effectiveLive) {
+          badgeYRef.current = updateBadgeDOM(
+            badgeRef.current, cfg, effectiveLive.value, layout, 'flat',
+            badgeYRef.current, badgeColorRef.current,
+            isWindowTransitioning, noMotion, ctx, pausedDt,
+            chartReveal,
+          )
+        } else {
+          badgeRef.current.container.style.display = 'none'
+        }
+      }
+
+      // Live value display
+      const barsValEl = cfg.valueDisplayRef?.current
+      if (barsValEl && effectiveLive) {
+        barsValEl.textContent = cfg.formatValue(effectiveLive.value)
+      }
+
+    } else if (isGauge) {
+      // ═══════════════════════════════════════════════════════
+      // GAUGE MODE PIPELINE
+      // ═══════════════════════════════════════════════════════
+
+      const gMin = cfg.min ?? 0
+      const gMax = cfg.max ?? 100
+      const gSpan = (gMax - gMin) || 1
+
+      // Smooth value — adaptive speed relative to gauge span
+      const valGap = Math.abs(cfg.value - displayValueRef.current)
+      const gapRatio = Math.min(valGap / gSpan, 1)
+      const gSpeed = noMotion ? 1 : cfg.lerpSpeed + (1 - gapRatio) * ADAPTIVE_SPEED_BOOST
+      displayValueRef.current = lerp(displayValueRef.current, cfg.value, gSpeed, pausedDt)
+      if (Math.abs(displayValueRef.current - cfg.value) < gSpan * VALUE_SNAP_THRESHOLD) {
+        displayValueRef.current = cfg.value
+      }
+      const smoothValue = displayValueRef.current
+      const t = normalizeGaugeValue(smoothValue, gMin, gMax)
+
+      drawGaugeFrame(ctx, w, h, pad, cfg.palette, {
+        t,
+        chartReveal,
+        valueText: cfg.formatValue(smoothValue),
+        minText: cfg.formatValue(gMin),
+        maxText: cfg.formatValue(gMax),
+        now_ms,
+        showPulse: cfg.showPulse && pauseProgress < 0.5,
+        loadingAlpha,
+      })
+
+      // No badge in gauge mode — the center value is the badge
+      if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+
+      // Live value display
+      const gaugeValEl = cfg.valueDisplayRef?.current
+      if (gaugeValEl) {
+        gaugeValEl.textContent = cfg.formatValue(smoothValue)
       }
 
     } else if ((cfg.isMultiSeries && cfg.multiSeries && cfg.multiSeries.length > 0) || useMultiStash) {

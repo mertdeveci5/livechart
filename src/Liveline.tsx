@@ -55,6 +55,11 @@ export function Liveline({
   lineMode,
   lineData,
   lineValue,
+  bars,
+  barWidth,
+  liveBar,
+  min,
+  max,
   onModeChange,
   onSeriesToggle,
   seriesToggleCompact = false,
@@ -102,18 +107,35 @@ export function Liveline({
     }))
   }, [seriesProp, seriesPalettes, theme])
 
-  // Resolve momentum prop: boolean enables auto-detect, string overrides
-  const showMomentum = momentum !== false
-  const momentumOverride: Momentum | undefined =
-    typeof momentum === 'string' ? momentum : undefined
+  // Mode-aware defaults — gauge is radial: no grid, badge, momentum, fill,
+  // or scrub; bars have no momentum arrows or area fill.
+  const isGauge = mode === 'gauge'
+  const isBars = mode === 'bars'
+  const effGrid = isGauge ? false : grid
+  const effBadge = isGauge ? false : badge
+  const effMomentum = (isGauge || isBars) ? false : momentum
+  const effFill = (isGauge || isBars) ? false : fill
+  const effScrub = isGauge ? false : scrub
 
-  const defaultRight = badge ? 80 : grid ? 54 : 12
-  const pad = {
-    top: paddingOverride?.top ?? 12,
-    right: paddingOverride?.right ?? defaultRight,
-    bottom: paddingOverride?.bottom ?? 28,
-    left: paddingOverride?.left ?? 12,
-  }
+  // Resolve momentum prop: boolean enables auto-detect, string overrides
+  const showMomentum = effMomentum !== false
+  const momentumOverride: Momentum | undefined =
+    typeof effMomentum === 'string' ? effMomentum : undefined
+
+  const defaultRight = effBadge ? 80 : effGrid ? 54 : 12
+  const pad = isGauge
+    ? {
+        top: paddingOverride?.top ?? 16,
+        right: paddingOverride?.right ?? 16,
+        bottom: paddingOverride?.bottom ?? 16,
+        left: paddingOverride?.left ?? 16,
+      }
+    : {
+        top: paddingOverride?.top ?? 12,
+        right: paddingOverride?.right ?? defaultRight,
+        bottom: paddingOverride?.bottom ?? 28,
+        left: paddingOverride?.left ?? 12,
+      }
 
   // Degen mode: explicit prop wins
   const degenEnabled = degenProp != null
@@ -187,18 +209,18 @@ export function Liveline({
     palette,
     windowSecs: effectiveWindowSecs,
     lerpSpeed,
-    showGrid: grid,
-    showBadge: isMultiSeries ? false : badge,
+    showGrid: effGrid,
+    showBadge: isMultiSeries ? false : effBadge,
     showMomentum: isMultiSeries ? false : showMomentum,
     momentumOverride,
-    showFill: isMultiSeries ? false : fill,
+    showFill: isMultiSeries ? false : effFill,
     referenceLine,
     formatValue,
     formatTime,
     padding: pad,
     onHover,
     showPulse: pulse,
-    scrub,
+    scrub: effScrub,
     exaggerate,
     degenOptions: isMultiSeries ? undefined : degenOptions,
     badgeTail,
@@ -218,12 +240,17 @@ export function Liveline({
     lineMode,
     lineData,
     lineValue,
+    bars,
+    barWidth,
+    liveBar,
+    min,
+    max,
     multiSeries,
     isMultiSeries,
     hiddenSeriesIds: hiddenSeries,
   })
 
-  const cursorStyle = scrub ? cursor : 'default'
+  const cursorStyle = effScrub ? cursor : 'default'
 
   const activeColor = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.55)'
   const inactiveColor = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.22)'

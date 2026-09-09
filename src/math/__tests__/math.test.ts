@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { lerp } from '../lerp'
-import { computeRange } from '../range'
+import { computeRange, computeBarsRange, normalizeGaugeValue } from '../range'
 import { detectMomentum } from '../momentum'
 import { interpolateAtTime } from '../interpolate'
 import { niceTimeInterval } from '../intervals'
@@ -165,5 +165,63 @@ describe('niceTimeInterval', () => {
     for (const w of [1, 10, 60, 300, 3600, 86400, 604800, 999999]) {
       expect(niceTimeInterval(w)).toBeGreaterThan(0)
     }
+  })
+})
+
+// -- computeBarsRange --
+
+describe('computeBarsRange', () => {
+  it('anchors to zero for positive values', () => {
+    const r = computeBarsRange([{ time: 0, value: 5 }, { time: 1, value: 10 }])
+    expect(r.min).toBe(0)
+    expect(r.max).toBeGreaterThan(10)
+  })
+
+  it('includes the zero line for negative values', () => {
+    const r = computeBarsRange([{ time: 0, value: -4 }, { time: 1, value: -8 }])
+    expect(r.max).toBe(0)
+    expect(r.min).toBeLessThan(-8)
+  })
+
+  it('spans both directions for mixed values', () => {
+    const r = computeBarsRange([{ time: 0, value: -5 }, { time: 1, value: 10 }])
+    expect(r.min).toBeLessThan(-5)
+    expect(r.max).toBeGreaterThan(10)
+  })
+
+  it('includes the live value', () => {
+    const r = computeBarsRange([{ time: 0, value: 5 }], 20)
+    expect(r.max).toBeGreaterThan(20)
+  })
+
+  it('gives a nominal range for empty/flat data', () => {
+    const r = computeBarsRange([])
+    expect(r.max).toBeGreaterThan(r.min)
+  })
+})
+
+// -- normalizeGaugeValue --
+
+describe('normalizeGaugeValue', () => {
+  it('maps min to 0 and max to 1', () => {
+    expect(normalizeGaugeValue(0, 0, 100)).toBe(0)
+    expect(normalizeGaugeValue(100, 0, 100)).toBe(1)
+  })
+
+  it('maps midpoint to 0.5', () => {
+    expect(normalizeGaugeValue(50, 0, 100)).toBe(0.5)
+  })
+
+  it('clamps out-of-range values', () => {
+    expect(normalizeGaugeValue(-10, 0, 100)).toBe(0)
+    expect(normalizeGaugeValue(150, 0, 100)).toBe(1)
+  })
+
+  it('handles custom ranges', () => {
+    expect(normalizeGaugeValue(25, 20, 30)).toBe(0.5)
+  })
+
+  it('returns 0 for a degenerate range', () => {
+    expect(normalizeGaugeValue(5, 5, 5)).toBe(0)
   })
 })
