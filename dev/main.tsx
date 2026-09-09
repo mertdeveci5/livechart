@@ -2,16 +2,10 @@ import React, { useState, useEffect, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
 import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment } from 'liveline'
-
-// --- Design tokens (alphafrontend / tlmc system) ---
-const PRIMARY = '#548eff'
-const CHART_1 = '#83bdff'
-const CHART_4 = '#4074fb'
-const CHART_5 = '#3257ee'
-const MUTED_BG = '#ecedef'
-const MUTED_FG = '#71717b'
-const BORDER = '#e4e4e7'
-const SERIF = "'Source Serif 4', Georgia, serif"
+import {
+  PRIMARY, CHART_1, CHART_4, CHART_5, MUTED_BG, MUTED_FG, BORDER,
+  HeroMark, Wordmark, Section, PageShell, Footer, Chip,
+} from './site'
 
 // --- Live data hooks ---
 
@@ -61,7 +55,62 @@ function useMultiLiveData(count: number, vol: Volatility = 'normal', tickMs = 10
   return streams
 }
 
-/** Tick stream aggregated into OHLC candles. */
+function useScatterData(base = 100) {
+  const [data, setData] = useState<LivelinePoint[]>([])
+  const [value, setValue] = useState(base)
+
+  useEffect(() => {
+    let v = base
+    const now = Date.now() / 1000
+    const seed: LivelinePoint[] = []
+    for (let t = now - 45; t < now; t += 0.25 + Math.random() * 0.55) {
+      v += (Math.random() - 0.5) * 3
+      seed.push({ time: t, value: v })
+    }
+    v = seed[seed.length - 1].value
+    const ref = { data: seed, value: v }
+    setData(seed)
+    setValue(v)
+
+    let timeout: ReturnType<typeof setTimeout>
+    const tick = () => {
+      ref.value += (Math.random() - 0.5) * 3
+      const p = { time: Date.now() / 1000, value: ref.value }
+      ref.data = [...ref.data, p].slice(-400)
+      setData(ref.data)
+      setValue(ref.value)
+      timeout = setTimeout(tick, 200 + Math.random() * 450)
+    }
+    timeout = setTimeout(tick, 300)
+    return () => clearTimeout(timeout)
+  }, [base])
+
+  return { data, value }
+}
+
+function useDonutData(tickMs = 900) {
+  const [segments, setSegments] = useState<DonutSegment[]>([
+    { id: 'alpha', value: 34, label: 'Alpha', color: PRIMARY },
+    { id: 'beta', value: 26, label: 'Beta', color: CHART_4 },
+    { id: 'gamma', value: 22, label: 'Gamma', color: CHART_1 },
+    { id: 'delta', value: 18, label: 'Delta', color: CHART_5 },
+  ])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSegments((prev) =>
+        prev.map((s) => ({
+          ...s,
+          value: Math.max(6, s.value + (Math.random() - 0.5) * 8),
+        })),
+      )
+    }, tickMs)
+    return () => clearInterval(id)
+  }, [tickMs])
+
+  return segments
+}
+
 function useCandleData(tickMs = 250, candleWidth = 5) {
   const [state, setState] = useState<{ candles: CandlePoint[]; live: CandlePoint | null }>({
     candles: [],
@@ -117,7 +166,6 @@ function useCandleData(tickMs = 250, candleWidth = 5) {
   return state
 }
 
-/** Volume-style bars — each tick adds to the current bucket. */
 function useBarsData(tickMs = 100, barWidth = 2) {
   const [state, setState] = useState<{ bars: BarPoint[]; live: BarPoint | null }>({
     bars: [],
@@ -154,65 +202,6 @@ function useBarsData(tickMs = 100, barWidth = 2) {
   return state
 }
 
-/** Sparse event stream for scatter — random intervals, random walk value. */
-function useScatterData(base = 100) {
-  const [data, setData] = useState<LivelinePoint[]>([])
-  const [value, setValue] = useState(base)
-
-  useEffect(() => {
-    let v = base
-    const now = Date.now() / 1000
-    const seed: LivelinePoint[] = []
-    for (let t = now - 45; t < now; t += 0.25 + Math.random() * 0.55) {
-      v += (Math.random() - 0.5) * 3
-      seed.push({ time: t, value: v })
-    }
-    v = seed[seed.length - 1].value
-    const ref = { data: seed, value: v }
-    setData(seed)
-    setValue(v)
-
-    let timeout: ReturnType<typeof setTimeout>
-    const tick = () => {
-      ref.value += (Math.random() - 0.5) * 3
-      const p = { time: Date.now() / 1000, value: ref.value }
-      ref.data = [...ref.data, p].slice(-400)
-      setData(ref.data)
-      setValue(ref.value)
-      timeout = setTimeout(tick, 200 + Math.random() * 450)
-    }
-    timeout = setTimeout(tick, 300)
-    return () => clearTimeout(timeout)
-  }, [base])
-
-  return { data, value }
-}
-
-/** Drifting segment weights for donut. */
-function useDonutData(tickMs = 900) {
-  const [segments, setSegments] = useState<DonutSegment[]>([
-    { id: 'alpha', value: 34, label: 'Alpha', color: PRIMARY },
-    { id: 'beta', value: 26, label: 'Beta', color: CHART_4 },
-    { id: 'gamma', value: 22, label: 'Gamma', color: CHART_1 },
-    { id: 'delta', value: 18, label: 'Delta', color: CHART_5 },
-  ])
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setSegments((prev) =>
-        prev.map((s) => ({
-          ...s,
-          value: Math.max(6, s.value + (Math.random() - 0.5) * 8),
-        })),
-      )
-    }, tickMs)
-    return () => clearInterval(id)
-  }, [tickMs])
-
-  return segments
-}
-
-/** Slowly oscillating gauge value (0–100). */
 function useGaugeData(tickMs = 200) {
   const [value, setValue] = useState(62)
 
@@ -229,67 +218,9 @@ function useGaugeData(tickMs = 200) {
   return value
 }
 
-// --- Hero mark ---
+// --- Chart card: borderless muted surface, white well, linked label below ---
 
-function HeroMark() {
-  return (
-    <div
-      style={{
-        width: 56,
-        height: 56,
-        borderRadius: 12,
-        background: MUTED_BG,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 20,
-      }}
-    >
-      <svg width="34" height="34" viewBox="0 0 40 40" fill="none">
-        <defs>
-          <linearGradient id="heroFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={PRIMARY} stopOpacity="0.25" />
-            <stop offset="100%" stopColor={PRIMARY} stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path
-          d="M4 30 C8 30 9 22 13 22 C17 22 18 26 21 26 C24 26 25 14 29 14 C32 14 33 18 36 18 L36 36 L4 36 Z"
-          fill="url(#heroFill)"
-        />
-        <path
-          d="M4 30 C8 30 9 22 13 22 C17 22 18 26 21 26 C24 26 25 14 29 14 C32 14 33 18 36 18"
-          stroke={PRIMARY}
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          fill="none"
-        />
-        <circle cx="36" cy="18" r="3" fill={PRIMARY} />
-        <circle cx="36" cy="18" r="3" fill="none" stroke={PRIMARY} strokeWidth="1.5" opacity="0.4">
-          <animate attributeName="r" values="3;7" dur="1.6s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="0.4;0" dur="1.6s" repeatCount="indefinite" />
-        </circle>
-      </svg>
-    </div>
-  )
-}
-
-// --- Section (alphafrontend LandingSection pattern) ---
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ padding: '40px 0 8px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}>
-        <span style={{ fontSize: 15, color: PRIMARY, flexShrink: 0 }}>{label}.</span>
-        <div style={{ flexGrow: 1, borderBottom: `1px solid ${BORDER}`, marginLeft: 16 }} />
-      </div>
-      {children}
-    </div>
-  )
-}
-
-// --- Chart card: borderless muted surface, white well, label below ---
-
-function Card({ label, children }: { label: string; children: React.ReactNode }) {
+function Card({ label, href, children }: { label: string; href: string; children: React.ReactNode }) {
   return (
     <div
       className="lc-card"
@@ -316,7 +247,9 @@ function Card({ label, children }: { label: string; children: React.ReactNode })
       >
         {children}
       </div>
-      <div style={{ fontSize: 14, color: '#3f3f46', marginTop: 12 }}>{label}</div>
+      <a href={href} className="lc-link" style={{ fontSize: 14, marginTop: 12, textDecoration: 'none' }}>
+        {label} <span style={{ fontSize: 12 }}>→</span>
+      </a>
     </div>
   )
 }
@@ -337,19 +270,14 @@ function PlaceholderCard({ label }: { label: string }) {
     >
       <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
         <path
-          d="M16 4 A12 12 0 1 1 4 16 L16 16 Z"
+          d="M6 20 C10 20 11 12 16 12 C21 12 22 18 26 18"
           stroke={MUTED_FG}
           strokeWidth="1.5"
-          strokeLinejoin="round"
+          strokeLinecap="round"
           opacity="0.5"
         />
-        <path
-          d="M16 16 L16 4 A12 12 0 0 1 27.8 10"
-          stroke={MUTED_FG}
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          opacity="0.25"
-        />
+        <path d="M6 26 L26 26" stroke={MUTED_FG} strokeWidth="1.5" strokeLinecap="round" opacity="0.25" />
+        <path d="M6 20 L6 26 L26 26 L26 18" fill={MUTED_FG} opacity="0.08" />
       </svg>
       <div style={{ fontSize: 14, color: MUTED_FG }}>{label}</div>
     </div>
@@ -367,8 +295,6 @@ function MultiSeriesChart() {
   const [a, b, c] = useMultiLiveData(3)
   return (
     <Liveline
-      data={[]}
-      value={0}
       theme="light"
       window={30}
       series={[
@@ -492,82 +418,60 @@ function ScatterChart() {
 
 function App() {
   return (
-    <div style={{ maxWidth: 768, margin: '0 auto', padding: '64px 24px 64px' }}>
+    <PageShell>
       <HeroMark />
-      <h1
-        style={{
-          fontFamily: SERIF,
-          fontSize: 38,
-          fontWeight: 500,
-          letterSpacing: '-0.01em',
-          marginBottom: 8,
-        }}
-      >
-        Livechart<span style={{ color: PRIMARY }}>.</span>
-      </h1>
+      <Wordmark>Livechart</Wordmark>
       <p style={{ fontSize: 17, lineHeight: 1.6, color: MUTED_FG, maxWidth: 560, marginBottom: 20 }}>
         Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge,
         donut, and scatter — canvas-rendered at 60fps, zero dependencies, one accent color.
       </p>
-      <div
-        style={{
-          display: 'inline-block',
-          fontFamily: '"SF Mono", Menlo, monospace',
-          fontSize: 13,
-          background: MUTED_BG,
-          borderRadius: 8,
-          padding: '8px 14px',
-          color: '#3f3f46',
-        }}
-      >
-        pnpm add livechart-react
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <Chip>pnpm add livechart-react</Chip>
+        <a href="docs.html" className="lc-link" style={{ fontSize: 14, textDecoration: 'none' }}>
+          Docs →
+        </a>
       </div>
 
-      <Section label="Line">
+      <Section label="Line" id="line">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <Card label="Line">
+          <Card label="Line" href="docs.html#line">
             <ClassicChart />
           </Card>
-          <Card label="Multi-series">
+          <Card label="Multi-series" href="docs.html#multi-series">
             <MultiSeriesChart />
           </Card>
-          <Card label="Momentum">
+          <Card label="Momentum" href="docs.html#line">
             <MomentumChart />
           </Card>
-          <Card label="Dashboard">
+          <Card label="Dashboard" href="docs.html#line">
             <DashboardChart />
           </Card>
         </div>
       </Section>
 
-      <Section label="Beyond line">
+      <Section label="Beyond line" id="beyond-line">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <Card label="Candlestick">
+          <Card label="Candlestick" href="docs.html#candlestick">
             <CandlestickChart />
           </Card>
-          <Card label="Bars">
+          <Card label="Bars" href="docs.html#bars">
             <BarsChart />
           </Card>
-          <Card label="Gauge">
+          <Card label="Gauge" href="docs.html#gauge">
             <GaugeChart />
           </Card>
-          <Card label="Donut">
+          <Card label="Donut" href="docs.html#donut">
             <DonutChart />
           </Card>
-          <Card label="Scatter">
+          <Card label="Scatter" href="docs.html#scatter">
             <ScatterChart />
           </Card>
           <PlaceholderCard label="Depth — up next" />
         </div>
       </Section>
 
-      <p style={{ fontSize: 13, color: MUTED_FG, marginTop: 40 }}>
-        Fork of{' '}
-        <a href="https://github.com/benjitaylor/liveline" style={{ color: MUTED_FG }}>liveline</a>
-        {' '}by Benji Taylor · MIT ·{' '}
-        <a href="https://github.com/mertdeveci5/livechart" style={{ color: MUTED_FG }}>GitHub</a>
-      </p>
-    </div>
+      <Footer />
+    </PageShell>
   )
 }
 
