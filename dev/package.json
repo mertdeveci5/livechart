@@ -1,9 +1,9 @@
 {
-  "name": "liveline-dev",
+  "name": "livechart-dev",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "portless liveline vite"
+    "dev": "vite"
   },
   "dependencies": {
     "react": "^18.3.1",

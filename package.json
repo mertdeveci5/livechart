@@ -1,8 +1,8 @@
 {
-  "name": "liveline",
-  "version": "0.0.7",
+  "name": "livechart-react",
+  "version": "0.1.0",
   "type": "module",
-  "description": "Real-time animated charts for React — line, candlestick, and multi-series modes",
+  "description": "Real-time animated charts for React \u2014 line, candlestick, and multi-series modes. Fork of liveline.",
   "keywords": [
     "react",
     "chart",
@@ -16,13 +16,15 @@
     "multi-line"
   ],
   "license": "MIT",
-  "author": "Benji Taylor",
+  "author": "Mert Deveci",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benjitaylor/liveline.git"
+    "url": "git+https://github.com/mertdeveci5/livechart.git"
   },
-  "homepage": "https://github.com/benjitaylor/liveline#readme",
-  "bugs": "https://github.com/benjitaylor/liveline/issues",
+  "homepage": "https://github.com/mertdeveci5/livechart#readme",
+  "bugs": {
+    "url": "https://github.com/mertdeveci5/livechart/issues"
+  },
   "sideEffects": false,
   "main": "dist/index.cjs",
   "module": "dist/index.js",

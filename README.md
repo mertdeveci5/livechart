@@ -1,11 +1,13 @@
-# Liveline
+# Livechart
 
 Real-time animated charts for React. Line, multi-series, and candlestick modes, canvas-rendered, 60fps, zero CSS imports.
+
+> **Fork of [liveline](https://github.com/benjitaylor/liveline) by Benji Taylor** — extended with more chart types in the same vein. Original code © Benji Taylor, MIT licensed (see [LICENSE](LICENSE)).
 
 ## Install
 
 ```bash
-pnpm add liveline
+pnpm add livechart-react
 ```
 
 Peer dependency: `react >=18`.
@@ -13,8 +15,8 @@ Peer dependency: `react >=18`.
 ## Quick Start
 
 ```tsx
-import { Liveline } from 'liveline'
-import type { LivelinePoint } from 'liveline'
+import { Liveline } from 'livechart-react'
+import type { LivelinePoint } from 'livechart-react'
 
 function Chart() {
   const [data, setData] = useState<LivelinePoint[]>([])
