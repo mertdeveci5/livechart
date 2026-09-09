@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { lerp } from '../lerp'
 import { computeRange, computeBarsRange, normalizeGaugeValue } from '../range'
 import { detectMomentum } from '../momentum'
-import { interpolateAtTime } from '../interpolate'
+import { interpolateAtTime, nearestPointAtTime } from '../interpolate'
 import { niceTimeInterval } from '../intervals'
 import type { LivelinePoint } from '../../types'
 
@@ -223,5 +223,34 @@ describe('normalizeGaugeValue', () => {
 
   it('returns 0 for a degenerate range', () => {
     expect(normalizeGaugeValue(5, 5, 5)).toBe(0)
+  })
+})
+
+// -- nearestPointAtTime --
+
+describe('nearestPointAtTime', () => {
+  const pts: LivelinePoint[] = [
+    { time: 10, value: 1 },
+    { time: 20, value: 2 },
+    { time: 30, value: 3 },
+  ]
+
+  it('returns null for empty arrays', () => {
+    expect(nearestPointAtTime([], 5)).toBeNull()
+  })
+
+  it('snaps to the closest point', () => {
+    expect(nearestPointAtTime(pts, 12)?.time).toBe(10)
+    expect(nearestPointAtTime(pts, 18)?.time).toBe(20)
+    expect(nearestPointAtTime(pts, 26)?.time).toBe(30)
+  })
+
+  it('clamps to the ends', () => {
+    expect(nearestPointAtTime(pts, 0)?.time).toBe(10)
+    expect(nearestPointAtTime(pts, 99)?.time).toBe(30)
+  })
+
+  it('breaks ties toward the earlier point', () => {
+    expect(nearestPointAtTime(pts, 15)?.time).toBe(10)
   })
 })

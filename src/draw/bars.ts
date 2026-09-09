@@ -97,15 +97,17 @@ export function drawBars(
 
     const isLive = b.time === liveTime
     const valueY = toY(b.value)
-    // Reveal morph — scale bar height toward the baseline
-    const topRaw = zeroY + (valueY - zeroY) * heightScale
+    // Reveal morph — scale bar height toward the baseline.
+    // Live bar additionally grows in on birth (no pop when a bucket rolls over).
+    const birthScale = isLive ? 0.2 + 0.8 * liveAlpha : 1
+    const topRaw = zeroY + (valueY - zeroY) * heightScale * birthScale
     const h = Math.abs(zeroY - topRaw)
     if (h < 0.5) continue
     const yTop = Math.min(zeroY, topRaw)
     const roundTop = b.value >= 0
 
     // Scrub dimming — smooth spatial falloff from cursor
-    let alpha = isLive ? liveAlpha : 0.85
+    let alpha = isLive ? 0.3 + 0.7 * liveAlpha : 0.85
     if (scrubX !== null && scrubDim > 0.01) {
       const dist = Math.abs(cx - scrubX)
       const fadeRange = slotW * 3

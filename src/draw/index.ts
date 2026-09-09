@@ -11,6 +11,8 @@ import { drawParticles, spawnOnSwing, type ParticleState } from './particles'
 import { drawCandlesticks, drawClosePrice, drawCandleCrosshair, drawLineModeCrosshair } from './candlestick'
 import { drawBars } from './bars'
 import { drawGauge } from './gauge'
+import { drawDonut, drawDonutLoading, drawDonutEmpty, type DonutSegmentDraw } from './donut'
+import { drawScatter } from './scatter'
 import { drawEmpty } from './empty'
 
 // Constants
@@ -835,5 +837,185 @@ export function drawGaugeFrame(
       showPulse: false,
     })
     ctx.restore()
+  }
+}
+
+// ─── Donut draw orchestration ──────────────────────────────────────────────
+
+export interface DonutFrameOptions {
+  segments: DonutSegmentDraw[]
+  centerText: string
+  centerLabel?: string
+  chartReveal: number
+  now_ms: number
+  hoveredId: string | null
+  loadingAlpha: number
+  /** True when there are no positive-value segments — show track + empty text */
+  empty: boolean
+  emptyText?: string
+}
+
+/**
+ * Donut draw orchestrator — segments with loading/empty overlays.
+ * No grid, no axes; the center text is the readout.
+ */
+export function drawDonutFrame(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  pad: { top: number; right: number; bottom: number; left: number },
+  palette: LivelinePalette,
+  opts: DonutFrameOptions,
+): void {
+  // Empty underlay — track ring + text, visible as segments fade out
+  if (opts.empty) {
+    drawDonutEmpty(ctx, w, h, pad, palette, (1 - opts.chartReveal) * (1 - opts.loadingAlpha), opts.emptyText)
+  }
+
+  drawDonut(ctx, w, h, pad, palette, {
+    segments: opts.segments,
+    centerText: opts.centerText,
+    centerLabel: opts.centerLabel,
+    chartReveal: opts.chartReveal,
+    now_ms: opts.now_ms,
+    hoveredId: opts.hoveredId,
+  })
+
+  if (opts.loadingAlpha > 0.01) {
+    drawDonutLoading(ctx, w, h, pad, palette, opts.now_ms, opts.loadingAlpha)
+  }
+}
+
+// ─── Scatter draw orchestration ────────────────────────────────────────────
+
+export interface ScatterDrawOptions {
+  visible: LivelinePoint[]
+  smoothValue: number
+  now: number
+  dotSize: number
+  showGrid: boolean
+  showPulse: boolean
+  referenceLine?: ReferenceLine
+  hoverX: number | null
+  hoveredPoint: LivelinePoint | null
+  hoverTime: number | null
+  scrubAmount: number
+  windowSecs: number
+  formatValue: (v: number) => string
+  formatTime: (t: number) => string
+  gridState: GridState
+  timeAxisState: TimeAxisState
+  dt: number
+  targetWindowSecs: number
+  tooltipY: number
+  tooltipOutline: boolean
+  chartReveal: number
+  pauseProgress: number
+  now_ms: number
+  loadingAlpha: number
+  showEmptyOverlay: boolean
+  emptyText?: string
+}
+
+/**
+ * Scatter draw orchestrator — grid, dots, live dot, time axis, crosshair.
+ * Line mode's frame minus the spline: same axes, same scrub, same reveal.
+ */
+export function drawScatterFrame(
+  ctx: CanvasRenderingContext2D,
+  layout: ChartLayout,
+  palette: LivelinePalette,
+  opts: ScatterDrawOptions,
+): void {
+  const { w, h, pad } = layout
+  const reveal = opts.chartReveal
+
+  const revealRamp = (start: number, end: number) => {
+    const t = Math.max(0, Math.min(1, (reveal - start) / (end - start)))
+    return t * t * (3 - 2 * t)
+  }
+
+  // 1. Reference line
+  if (opts.referenceLine && reveal > 0.01) {
+    ctx.save()
+    if (reveal < 1) ctx.globalAlpha = reveal
+    drawReferenceLine(ctx, layout, palette, opts.referenceLine)
+    ctx.restore()
+  }
+
+  // 2. Grid
+  if (opts.showGrid) {
+    const gridAlpha = revealRamp(0.15, 0.7)
+    if (gridAlpha > 0.01) {
+      ctx.save()
+      if (gridAlpha < 1) ctx.globalAlpha = gridAlpha
+      drawGrid(ctx, layout, palette, opts.formatValue, opts.gridState, opts.dt)
+      ctx.restore()
+    }
+  }
+
+  // 3. Dots (+ live dot)
+  const scrubX = opts.scrubAmount > 0.05 ? opts.hoverX : null
+  const livePt = drawScatter(
+    ctx, layout, palette,
+    opts.visible, opts.smoothValue, opts.now,
+    opts.dotSize, scrubX, opts.scrubAmount,
+    opts.hoveredPoint?.time ?? null,
+    reveal, opts.now_ms,
+    opts.showPulse && reveal > 0.6 && opts.pauseProgress < 0.5,
+  )
+
+  // 4. Time axis
+  const timeAlpha = revealRamp(0.15, 0.7)
+  if (timeAlpha > 0.01) {
+    ctx.save()
+    if (timeAlpha < 1) ctx.globalAlpha = timeAlpha
+    drawTimeAxis(ctx, layout, palette, opts.windowSecs, opts.targetWindowSecs, opts.formatTime, opts.timeAxisState, opts.dt)
+    ctx.restore()
+  }
+
+  // 5. Left edge fade
+  ctx.save()
+  ctx.globalCompositeOperation = 'destination-out'
+  const fadeGrad = ctx.createLinearGradient(pad.left, 0, pad.left + FADE_EDGE_WIDTH, 0)
+  fadeGrad.addColorStop(0, 'rgba(0, 0, 0, 1)')
+  fadeGrad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = fadeGrad
+  ctx.fillRect(0, 0, pad.left + FADE_EDGE_WIDTH, h)
+  ctx.restore()
+
+  // 6. Reverse morph empty overlay
+  if (opts.showEmptyOverlay) {
+    const bgAlpha = 1 - reveal
+    if (bgAlpha > 0.01) {
+      const bgEmptyAlpha = (1 - opts.loadingAlpha) * bgAlpha
+      if (bgEmptyAlpha > 0.01) {
+        drawEmpty(ctx, w, h, pad, palette, bgEmptyAlpha, opts.now_ms, true, opts.emptyText)
+      }
+    }
+  }
+
+  // 7. Crosshair — tooltip on the hovered dot
+  if (
+    opts.hoverX !== null && opts.hoveredPoint && opts.hoverTime !== null &&
+    livePt && opts.scrubAmount > 0.01
+  ) {
+    const distToLive = livePt[0] - opts.hoverX
+    const fadeStart = Math.min(80, layout.chartW * 0.3)
+    const scrubOpacity = distToLive < CROSSHAIR_FADE_MIN_PX ? 0
+      : distToLive >= fadeStart ? opts.scrubAmount
+      : ((distToLive - CROSSHAIR_FADE_MIN_PX) / (fadeStart - CROSSHAIR_FADE_MIN_PX)) * opts.scrubAmount
+
+    if (scrubOpacity > 0.01) {
+      drawCrosshair(
+        ctx, layout, palette,
+        opts.hoverX, opts.hoveredPoint.value, opts.hoverTime,
+        opts.formatValue, opts.formatTime,
+        scrubOpacity,
+        opts.tooltipY,
+        livePt[0],
+        opts.tooltipOutline,
+      )
+    }
   }
 }

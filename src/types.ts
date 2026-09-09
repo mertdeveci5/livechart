@@ -55,8 +55,10 @@ export interface LivelineSeries {
 }
 
 export interface LivelineProps {
-  data: LivelinePoint[]
-  value: number
+  // Line/scatter data — required for line, multi-series, and scatter modes.
+  // Candle/bars/gauge/donut modes take their own data props instead.
+  data?: LivelinePoint[]
+  value?: number
 
   // Multi-series mode — when provided, overrides data/value/color
   series?: LivelineSeries[]
@@ -110,7 +112,7 @@ export interface LivelineProps {
   lineWidth?: number       // Stroke width of the main line in px (default: 2)
 
   // Chart type
-  mode?: 'line' | 'candle' | 'bars' | 'gauge'  // (default: 'line')
+  mode?: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter'  // (default: 'line')
   candles?: CandlePoint[]         // OHLC candle data (required when mode='candle')
   candleWidth?: number            // Seconds per candle (required when mode='candle')
   liveCandle?: CandlePoint        // Current live candle with real-time OHLC
@@ -130,6 +132,12 @@ export interface LivelineProps {
   min?: number                    // Gauge minimum value (default: 0)
   max?: number                    // Gauge maximum value (default: 100)
 
+  // Donut mode
+  segments?: DonutSegment[]       // Live proportion segments (required when mode='donut')
+
+  // Scatter mode — uses data/value like line mode, drawn as unconnected dots
+  dotSize?: number                // Scatter dot radius in px (default: 3.5)
+
   className?: string
   style?: CSSProperties
 }
@@ -145,6 +153,13 @@ export interface CandlePoint {
 export interface BarPoint {
   time: number   // unix seconds — bar bucket start time
   value: number
+}
+
+export interface DonutSegment {
+  id: string
+  value: number
+  label?: string
+  color?: string   // segment color — falls back to the series color rotation
 }
 
 export interface LivelinePalette {

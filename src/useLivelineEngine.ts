@@ -1,11 +1,14 @@
 import { useRef, useEffect, useCallback } from 'react'
-import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint } from './types'
+import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint, DonutSegment } from './types'
 import { lerp } from './math/lerp'
 import { computeRange, computeBarsRange, normalizeGaugeValue } from './math/range'
 import { detectMomentum } from './math/momentum'
 import { interpolateAtTime } from './math/interpolate'
 import { getDpr, applyDpr } from './canvas/dpr'
-import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, FADE_EDGE_WIDTH } from './draw'
+import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, drawDonutFrame, drawScatterFrame, FADE_EDGE_WIDTH } from './draw'
+import type { DonutSegmentDraw } from './draw/donut'
+import { SERIES_COLORS } from './theme'
+import { nearestPointAtTime } from './math/interpolate'
 import type { MultiSeriesEntry } from './draw'
 import { drawLoading } from './draw/loading'
 import { drawEmpty } from './draw/empty'
@@ -46,7 +49,7 @@ interface EngineConfig {
   emptyText?: string
 
   // Chart type
-  mode: 'line' | 'candle' | 'bars' | 'gauge'
+  mode: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter'
   candles?: CandlePoint[]
   candleWidth?: number
   liveCandle?: CandlePoint
@@ -62,6 +65,12 @@ interface EngineConfig {
   // Gauge mode
   min?: number
   max?: number
+
+  // Donut mode
+  segments?: DonutSegment[]
+
+  // Scatter mode
+  dotSize?: number
 
   // Multi-series mode
   multiSeries?: Array<{
@@ -609,6 +618,7 @@ export function useLivelineEngine(
 
   // Hover state
   const hoverXRef = useRef<number | null>(null)
+  const hoverYRef = useRef<number | null>(null)
   const scrubAmountRef = useRef(0) // 0 = not scrubbing, 1 = fully scrubbing
   const lastHoverRef = useRef<{ x: number; value: number; time: number } | null>(null)
   const lastHoverEntriesRef = useRef<{ color: string; label: string; value: number }[]>([])
@@ -674,6 +684,11 @@ export function useLivelineEngine(
   const lastBarsRef = useRef<BarPoint[]>([])
   const lastLiveBarRef = useRef<BarPoint | null>(null)
 
+  // --- Donut mode refs ---
+  // Per-segment lerped state: sweep fraction, visibility alpha, hover expansion
+  const donutStateRef = useRef<Map<string, { frac: number; alpha: number; expand: number; color: string }>>(new Map())
+  const donutHoverRef = useRef<string | null>(null)
+
   // Create badge DOM elements (once, appended to container)
   useEffect(() => {
     const container = containerRef.current
@@ -732,9 +747,11 @@ export function useLivelineEngine(
       if (!configRef.current.scrub) return
       const rect = container.getBoundingClientRect()
       hoverXRef.current = e.clientX - rect.left
+      hoverYRef.current = e.clientY - rect.top
     }
     const onLeave = () => {
       hoverXRef.current = null
+      hoverYRef.current = null
       configRef.current.onHover?.(null)
     }
 
@@ -743,6 +760,7 @@ export function useLivelineEngine(
       if (e.touches.length !== 1) return
       const rect = container.getBoundingClientRect()
       hoverXRef.current = e.touches[0].clientX - rect.left
+      hoverYRef.current = e.touches[0].clientY - rect.top
     }
     const onTouchMove = (e: TouchEvent) => {
       if (!configRef.current.scrub) return
@@ -750,9 +768,11 @@ export function useLivelineEngine(
       e.preventDefault() // prevent scroll while scrubbing
       const rect = container.getBoundingClientRect()
       hoverXRef.current = e.touches[0].clientX - rect.left
+      hoverYRef.current = e.touches[0].clientY - rect.top
     }
     const onTouchEnd = () => {
       hoverXRef.current = null
+      hoverYRef.current = null
       configRef.current.onHover?.(null)
     }
 
@@ -844,6 +864,8 @@ export function useLivelineEngine(
     const isCandle = cfg.mode === 'candle'
     const isBars = cfg.mode === 'bars'
     const isGauge = cfg.mode === 'gauge'
+    const isDonut = cfg.mode === 'donut'
+    const isScatter = cfg.mode === 'scatter'
 
     if (isCandle) {
       if (cfg.paused && pausedCandlesRef.current === null && (cfg.candles?.length ?? 0) > 0) {
@@ -887,11 +909,12 @@ export function useLivelineEngine(
       }
     }
 
-    const points = (isCandle || isBars || isGauge) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
+    const points = (isCandle || isBars || isGauge || isDonut) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
     const effectiveCandles = isCandle ? (pausedCandlesRef.current ?? (cfg.candles ?? [])) : ([] as CandlePoint[])
     const effectiveBars = isBars ? (pausedBarsRef.current ?? (cfg.bars ?? [])) : ([] as BarPoint[])
     const hasMultiData = cfg.isMultiSeries && cfg.multiSeries ? cfg.multiSeries.some(s => s.data.length >= 2) : false
     const hasData = isGauge ? true
+      : isDonut ? true
       : isCandle ? effectiveCandles.length >= 2
       : isBars ? (effectiveBars.length >= 1 || cfg.liveBar != null || pausedLiveBarRef.current != null)
       : (hasMultiData || points.length >= 2)
@@ -930,7 +953,11 @@ export function useLivelineEngine(
     const loadingAlpha = loadingAlphaRef.current
 
     // --- Chart reveal (loading/empty → data morph) ---
-    const revealTarget = (!cfg.loading && hasData) ? 1 : 0
+    // Donut has its own in-pipeline loading/empty states: reveal tracks
+    // whether any segment has a positive value.
+    const revealTarget = isDonut
+      ? ((!cfg.loading && (cfg.segments ?? []).some(s => s.value > 0)) ? 1 : 0)
+      : (!cfg.loading && hasData) ? 1 : 0
     chartRevealRef.current = noMotion
       ? revealTarget
       : lerp(chartRevealRef.current, revealTarget,
@@ -955,7 +982,7 @@ export function useLivelineEngine(
       // Candle stash updated inside candle pipeline after computing visible
     } else if (isBars) {
       useStash = !hasData && chartReveal > 0.005 && lastBarsRef.current.length > 0
-    } else if (isGauge) {
+    } else if (isGauge || isDonut) {
       useStash = false
     } else {
       // Multi-series stash
@@ -1680,6 +1707,282 @@ export function useLivelineEngine(
       const gaugeValEl = cfg.valueDisplayRef?.current
       if (gaugeValEl) {
         gaugeValEl.textContent = cfg.formatValue(smoothValue)
+      }
+
+    } else if (isDonut) {
+      // ═══════════════════════════════════════════════════════
+      // DONUT MODE PIPELINE
+      // ═══════════════════════════════════════════════════════
+
+      const segs = cfg.segments ?? []
+      const total = segs.reduce((s, x) => s + Math.max(0, x.value), 0)
+      const hasPositive = total > 0
+
+      // Per-segment lerped state (frac, alpha, expand, last color)
+      const state = donutStateRef.current
+      const presentIds = new Set(segs.map(s => s.id))
+      segs.forEach((s, i) => {
+        let st = state.get(s.id)
+        if (!st) {
+          st = { frac: 0, alpha: 0, expand: 0, color: s.color ?? SERIES_COLORS[i % SERIES_COLORS.length] }
+          state.set(s.id, st)
+        }
+        st.color = s.color ?? SERIES_COLORS[i % SERIES_COLORS.length]
+        const target = hasPositive ? Math.max(0, s.value) / total : 0
+        st.frac = noMotion ? target : lerp(st.frac, target, 0.14, pausedDt)
+        if (Math.abs(st.frac - target) < 0.0005) st.frac = target
+        st.alpha = noMotion ? 1 : lerp(st.alpha, 1, 0.14, pausedDt)
+        if (st.alpha > 0.99) st.alpha = 1
+      })
+      for (const [id, st] of state) {
+        if (!presentIds.has(id)) {
+          st.alpha = noMotion ? 0 : lerp(st.alpha, 0, 0.14, pausedDt)
+          st.frac = noMotion ? 0 : lerp(st.frac, 0, 0.14, pausedDt)
+          if (st.alpha < 0.01 && st.frac < 0.001) state.delete(id)
+        }
+      }
+
+      // Normalize lerped fracs so they sum to 1 during transitions
+      let fracSum = 0
+      for (const st of state.values()) fracSum += st.frac
+      const norm = fracSum > 0.001 ? 1 / fracSum : 0
+
+      // Geometry (mirrors the draw module)
+      const chartW = w - pad.left - pad.right
+      const chartH = h - pad.top - pad.bottom
+      const cx = pad.left + chartW / 2
+      const cy = pad.top + chartH / 2
+      const radius = Math.max(32, Math.min(chartW, chartH) * 0.38)
+      const thickness = Math.max(10, radius * 0.26)
+
+      // Hover hit-test — ring band + angle → segment
+      const hx = hoverXRef.current
+      const hy = hoverYRef.current
+      let hoveredId: string | null = null
+      if (hx !== null && hy !== null && chartReveal > 0.5) {
+        const dx = hx - cx
+        const dy = hy - cy
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist >= radius - thickness / 2 - 4 && dist <= radius + thickness / 2 + 6) {
+          const START = -Math.PI / 2
+          let rel = Math.atan2(dy, dx) - START
+          const TAU = Math.PI * 2
+          rel = ((rel % TAU) + TAU) % TAU
+          const f = rel / TAU
+          let acc = 0
+          for (const s of segs) {
+            const st = state.get(s.id)
+            if (!st) continue
+            const fr = st.frac * norm
+            if (f >= acc && f < acc + fr) { hoveredId = s.id; break }
+            acc += fr
+          }
+        }
+      }
+      donutHoverRef.current = hoveredId
+
+      // Expand lerp
+      for (const [id, st] of state) {
+        const target = id === hoveredId ? 1 : 0
+        st.expand = noMotion ? target : lerp(st.expand, target, 0.18, dt)
+        if (st.expand < 0.01) st.expand = 0
+        if (st.expand > 0.99) st.expand = 1
+      }
+
+      // Build draw segments in prop order, then exiting segments
+      const drawSegs: DonutSegmentDraw[] = []
+      for (const s of segs) {
+        const st = state.get(s.id)
+        if (!st) continue
+        drawSegs.push({ id: s.id, frac: st.frac * norm, alpha: st.alpha, expand: st.expand, color: st.color })
+      }
+      for (const [id, st] of state) {
+        if (!presentIds.has(id) && st.alpha > 0.01) {
+          drawSegs.push({ id, frac: st.frac * norm, alpha: st.alpha, expand: 0, color: st.color })
+        }
+      }
+
+      const hoveredSeg = hoveredId ? segs.find(s => s.id === hoveredId) : undefined
+      const centerText = hoveredSeg ? cfg.formatValue(hoveredSeg.value) : cfg.formatValue(total)
+      const centerLabel = hoveredSeg ? (hoveredSeg.label ?? hoveredSeg.id) : undefined
+
+      drawDonutFrame(ctx, w, h, pad, cfg.palette, {
+        segments: drawSegs,
+        centerText,
+        centerLabel,
+        chartReveal,
+        now_ms,
+        hoveredId,
+        loadingAlpha,
+        empty: !hasPositive,
+        emptyText: cfg.emptyText,
+      })
+
+      if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+      const donutValEl = cfg.valueDisplayRef?.current
+      if (donutValEl) donutValEl.textContent = cfg.formatValue(total)
+
+    } else if (isScatter) {
+      // ═══════════════════════════════════════════════════════
+      // SCATTER MODE PIPELINE (line pipeline, dots instead of spline)
+      // ═══════════════════════════════════════════════════════
+
+      const effectivePoints = useStash ? lastDataRef.current : points
+
+      const adaptiveSpeed = computeAdaptiveSpeed(
+        cfg.value, displayValueRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        cfg.lerpSpeed, noMotion,
+      )
+      if (!useStash) {
+        displayValueRef.current = lerp(displayValueRef.current, cfg.value, adaptiveSpeed, pausedDt)
+        if (pauseProgress < 0.5) {
+          const prevRange = displayMaxRef.current - displayMinRef.current || 1
+          if (Math.abs(displayValueRef.current - cfg.value) < prevRange * VALUE_SNAP_THRESHOLD) {
+            displayValueRef.current = cfg.value
+          }
+        }
+      }
+      const smoothValue = displayValueRef.current
+
+      const chartW = w - pad.left - pad.right
+      const buffer = cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE
+
+      const transition = windowTransitionRef.current
+      if (hasData) frozenNowRef.current = Date.now() / 1000 - timeDebtRef.current
+      const now = useStash ? frozenNowRef.current : Date.now() / 1000 - timeDebtRef.current
+      const windowResult = updateWindowTransition(
+        cfg, transition, displayWindowRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        noMotion, now_ms, now, effectivePoints, smoothValue, buffer,
+      )
+      displayWindowRef.current = windowResult.windowSecs
+      const windowSecs = windowResult.windowSecs
+      const windowTransProgress = windowResult.windowTransProgress
+
+      const rightEdge = now + windowSecs * buffer
+      const leftEdge = rightEdge - windowSecs
+      const filterRight = rightEdge - (rightEdge - now) * pauseProgress
+      const visible: LivelinePoint[] = []
+      for (const p of effectivePoints) {
+        if (p.time >= leftEdge - 2 && p.time <= filterRight) visible.push(p)
+      }
+
+      if (visible.length < 2) {
+        if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+        rafRef.current = requestAnimationFrame(draw)
+        return
+      }
+
+      const computedRange = computeRange(visible, smoothValue, cfg.referenceLine?.value, cfg.exaggerate)
+      const isWindowTransitioning = transition.startMs > 0
+      const rangeResult = updateRange(
+        computedRange, rangeInitedRef.current,
+        targetMinRef.current, targetMaxRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        isWindowTransitioning, windowTransProgress, transition,
+        adaptiveSpeed, chartH, pausedDt,
+      )
+      rangeInitedRef.current = rangeResult.rangeInited
+      targetMinRef.current = rangeResult.targetMin
+      targetMaxRef.current = rangeResult.targetMax
+      displayMinRef.current = rangeResult.displayMin
+      displayMaxRef.current = rangeResult.displayMax
+      const { minVal, maxVal, valRange } = rangeResult
+
+      const layout: ChartLayout = {
+        w, h, pad,
+        chartW, chartH,
+        leftEdge, rightEdge,
+        minVal, maxVal, valRange,
+        toX: (t: number) => pad.left + ((t - leftEdge) / (rightEdge - leftEdge)) * chartW,
+        toY: (v: number) => pad.top + (1 - (v - minVal) / valRange) * chartH,
+      }
+
+      // Hover — magnetic snap to nearest dot by time
+      const hoverPx = hoverXRef.current
+      let hoveredPoint: LivelinePoint | null = null
+      let drawHoverX: number | null = null
+      let drawHoverTime: number | null = null
+      let isActiveHover = false
+      if (hoverPx !== null && hoverPx >= pad.left && hoverPx <= w - pad.right) {
+        const maxHoverX = layout.toX(now)
+        const clampedX = Math.min(hoverPx, maxHoverX)
+        const t = leftEdge + ((clampedX - pad.left) / chartW) * (rightEdge - leftEdge)
+        const nearest = nearestPointAtTime(visible, t)
+        if (nearest) {
+          hoveredPoint = nearest
+          drawHoverX = layout.toX(nearest.time)
+          drawHoverTime = nearest.time
+          isActiveHover = true
+          lastHoverRef.current = { x: drawHoverX, value: nearest.value, time: nearest.time }
+          cfg.onHover?.({ time: nearest.time, value: nearest.value, x: drawHoverX, y: layout.toY(nearest.value) })
+        }
+      }
+
+      const scrubTarget = isActiveHover ? 1 : 0
+      if (noMotion) {
+        scrubAmountRef.current = scrubTarget
+      } else {
+        scrubAmountRef.current += (scrubTarget - scrubAmountRef.current) * SCRUB_LERP_SPEED
+        if (scrubAmountRef.current < 0.01) scrubAmountRef.current = 0
+        if (scrubAmountRef.current > 0.99) scrubAmountRef.current = 1
+      }
+
+      if (!isActiveHover && scrubAmountRef.current > 0 && lastHoverRef.current) {
+        drawHoverX = lastHoverRef.current.x
+        drawHoverTime = lastHoverRef.current.time
+        hoveredPoint = nearestPointAtTime(visible, lastHoverRef.current.time)
+      }
+
+      drawScatterFrame(ctx, layout, cfg.palette, {
+        visible,
+        smoothValue,
+        now,
+        dotSize: cfg.dotSize ?? 3.5,
+        showGrid: cfg.showGrid,
+        showPulse: cfg.showPulse,
+        referenceLine: cfg.referenceLine,
+        hoverX: drawHoverX,
+        hoveredPoint,
+        hoverTime: drawHoverTime,
+        scrubAmount: scrubAmountRef.current,
+        windowSecs,
+        formatValue: cfg.formatValue,
+        formatTime: cfg.formatTime,
+        gridState: gridStateRef.current,
+        timeAxisState: timeAxisStateRef.current,
+        dt,
+        targetWindowSecs: cfg.windowSecs,
+        tooltipY: cfg.tooltipY,
+        tooltipOutline: cfg.tooltipOutline,
+        chartReveal,
+        pauseProgress,
+        now_ms,
+        loadingAlpha,
+        showEmptyOverlay: revealTarget === 0 && !(cfg.loading ?? false),
+        emptyText: cfg.emptyText,
+      })
+
+      // Badge — tracks the live value
+      const scatterBadge = badgeRef.current
+      if (scatterBadge) {
+        badgeYRef.current = updateBadgeDOM(
+          scatterBadge, cfg, smoothValue, layout, 'flat',
+          badgeYRef.current, badgeColorRef.current,
+          isWindowTransitioning, noMotion, ctx, pausedDt,
+          chartReveal,
+        )
+        if (pauseProgress > 0.01 && scatterBadge.container.style.display !== 'none') {
+          const base = scatterBadge.container.style.opacity ? parseFloat(scatterBadge.container.style.opacity) : 1
+          scatterBadge.container.style.opacity = String(base * (1 - pauseProgress))
+        }
+      }
+
+      // Live value display
+      const scatterValEl = cfg.valueDisplayRef?.current
+      if (scatterValEl) {
+        scatterValEl.textContent = cfg.formatValue(smoothValue)
       }
 
     } else if ((cfg.isMultiSeries && cfg.multiSeries && cfg.multiSeries.length > 0) || useMultiStash) {

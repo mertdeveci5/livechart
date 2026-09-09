@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
-import type { LivelinePoint, CandlePoint, BarPoint } from 'liveline'
+import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment } from 'liveline'
 
 // --- Design tokens (alphafrontend / tlmc system) ---
 const PRIMARY = '#548eff'
@@ -152,6 +152,64 @@ function useBarsData(tickMs = 100, barWidth = 2) {
   }, [tickMs, barWidth])
 
   return state
+}
+
+/** Sparse event stream for scatter — random intervals, random walk value. */
+function useScatterData(base = 100) {
+  const [data, setData] = useState<LivelinePoint[]>([])
+  const [value, setValue] = useState(base)
+
+  useEffect(() => {
+    let v = base
+    const now = Date.now() / 1000
+    const seed: LivelinePoint[] = []
+    for (let t = now - 45; t < now; t += 0.25 + Math.random() * 0.55) {
+      v += (Math.random() - 0.5) * 3
+      seed.push({ time: t, value: v })
+    }
+    v = seed[seed.length - 1].value
+    const ref = { data: seed, value: v }
+    setData(seed)
+    setValue(v)
+
+    let timeout: ReturnType<typeof setTimeout>
+    const tick = () => {
+      ref.value += (Math.random() - 0.5) * 3
+      const p = { time: Date.now() / 1000, value: ref.value }
+      ref.data = [...ref.data, p].slice(-400)
+      setData(ref.data)
+      setValue(ref.value)
+      timeout = setTimeout(tick, 200 + Math.random() * 450)
+    }
+    timeout = setTimeout(tick, 300)
+    return () => clearTimeout(timeout)
+  }, [base])
+
+  return { data, value }
+}
+
+/** Drifting segment weights for donut. */
+function useDonutData(tickMs = 900) {
+  const [segments, setSegments] = useState<DonutSegment[]>([
+    { id: 'alpha', value: 34, label: 'Alpha', color: PRIMARY },
+    { id: 'beta', value: 26, label: 'Beta', color: CHART_4 },
+    { id: 'gamma', value: 22, label: 'Gamma', color: CHART_1 },
+    { id: 'delta', value: 18, label: 'Delta', color: CHART_5 },
+  ])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSegments((prev) =>
+        prev.map((s) => ({
+          ...s,
+          value: Math.max(6, s.value + (Math.random() - 0.5) * 8),
+        })),
+      )
+    }, tickMs)
+    return () => clearInterval(id)
+  }, [tickMs])
+
+  return segments
 }
 
 /** Slowly oscillating gauge value (0–100). */
@@ -363,8 +421,6 @@ function CandlestickChart() {
   return (
     <Liveline
       mode="candle"
-      data={[]}
-      value={0}
       candles={candles}
       candleWidth={5}
       liveCandle={live ?? undefined}
@@ -380,8 +436,6 @@ function BarsChart() {
   return (
     <Liveline
       mode="bars"
-      data={[]}
-      value={0}
       bars={bars}
       barWidth={2}
       liveBar={live ?? undefined}
@@ -398,13 +452,38 @@ function GaugeChart() {
   return (
     <Liveline
       mode="gauge"
-      data={[]}
       value={value}
       min={0}
       max={100}
       color={CHART_5}
       theme="light"
       formatValue={(v) => `${v.toFixed(0)}%`}
+    />
+  )
+}
+
+function DonutChart() {
+  const segments = useDonutData(900)
+  return (
+    <Liveline
+      mode="donut"
+      segments={segments}
+      theme="light"
+      formatValue={(v) => v.toFixed(0)}
+    />
+  )
+}
+
+function ScatterChart() {
+  const { data, value } = useScatterData()
+  return (
+    <Liveline
+      mode="scatter"
+      data={data}
+      value={value}
+      color={PRIMARY}
+      theme="light"
+      window={30}
     />
   )
 }
@@ -427,8 +506,8 @@ function App() {
         Livechart<span style={{ color: PRIMARY }}>.</span>
       </h1>
       <p style={{ fontSize: 17, lineHeight: 1.6, color: MUTED_FG, maxWidth: 560, marginBottom: 20 }}>
-        Real-time animated charts for React. Line, multi-series, candlestick, bars, and gauge —
-        canvas-rendered at 60fps, zero dependencies, one accent color.
+        Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge,
+        donut, and scatter — canvas-rendered at 60fps, zero dependencies, one accent color.
       </p>
       <div
         style={{
@@ -472,7 +551,13 @@ function App() {
           <Card label="Gauge">
             <GaugeChart />
           </Card>
-          <PlaceholderCard label="Donut — up next" />
+          <Card label="Donut">
+            <DonutChart />
+          </Card>
+          <Card label="Scatter">
+            <ScatterChart />
+          </Card>
+          <PlaceholderCard label="Depth — up next" />
         </div>
       </Section>
 

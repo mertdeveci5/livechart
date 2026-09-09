@@ -1,6 +1,6 @@
 # Livechart
 
-Real-time animated charts for React. Line, multi-series, candlestick, bars, and gauge modes, canvas-rendered, 60fps, zero CSS imports.
+Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge, donut, and scatter modes, canvas-rendered, 60fps, zero CSS imports.
 
 > **Fork of [liveline](https://github.com/benjitaylor/liveline) by Benji Taylor** — extended with more chart types in the same vein. Original code © Benji Taylor, MIT licensed (see [LICENSE](LICENSE)).
 
@@ -41,8 +41,10 @@ The component fills its parent container. Set a height on the parent. Pass `data
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `data` | `LivelinePoint[]` | required | Array of `{ time, value }` points |
-| `value` | `number` | required | Latest value (smoothly interpolated) |
+| `data` | `LivelinePoint[]` | `[]` | Array of `{ time, value }` points (line, multi-series, scatter) |
+| `value` | `number` | `0` | Latest value — smoothly interpolated (line, scatter, gauge) |
+
+Only line, multi-series, and scatter modes use `data`/`value` — candle, bars, gauge, and donut modes take their own data props (`candles`, `bars`, `segments`, …), so you don't need to pass dummy props.
 
 **Appearance**
 
@@ -73,7 +75,7 @@ The component fills its parent container. Set a height on the parent. Pass `data
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `mode` | `'line' \| 'candle' \| 'bars' \| 'gauge'` | `'line'` | Chart type |
+| `mode` | `'line' \| 'candle' \| 'bars' \| 'gauge' \| 'donut' \| 'scatter'` | `'line'` | Chart type |
 | `candles` | `CandlePoint[]` | — | OHLC candle data `{ time, open, high, low, close }` |
 | `candleWidth` | `number` | — | Seconds per candle |
 | `liveCandle` | `CandlePoint` | — | Current in-progress candle with real-time OHLC |
@@ -104,6 +106,22 @@ When `mode="bars"`, pass `bars` (committed buckets) and `liveBar` (the current b
 | `max` | `number` | `100` | Gauge maximum value |
 
 When `mode="gauge"`, only `value` is required — a radial 240° arc sweeps to the smoothed value with a live dot at the tip, center value text, and min/max labels. Grid, badge, scrub, and momentum are disabled automatically. Loading shows a breathing arc.
+
+**Donut**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `segments` | `DonutSegment[]` | — | Live proportion segments `{ id, value, label?, color? }` |
+
+When `mode="donut"`, pass `segments` — arc fractions lerp smoothly as values change, segments enter/exit with fades, and hovering a segment expands it (siblings dim) while the center shows its value and label. Segment colors fall back to the series color rotation. The center readout is the formatted total; loading shows a sweeping ring, and all-zero data shows a track ring with `emptyText`.
+
+**Scatter**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `dotSize` | `number` | `3.5` | Scatter dot radius in px |
+
+When `mode="scatter"`, the same `data`/`value` props as line mode render as unconnected dots — dots pop in on birth, the live value keeps the pulsing dot, and scrubbing snaps magnetically to the nearest dot with a ring highlight and crosshair tooltip.
 
 **Multi-series**
 
@@ -246,8 +264,6 @@ When `loading` flips to `false` with data present, the loading line morphs into 
 ```tsx
 <Liveline
   mode="bars"
-  data={[]}
-  value={0}
   bars={bars}
   barWidth={2}
   liveBar={liveBar}
@@ -262,12 +278,38 @@ When `loading` flips to `false` with data present, the loading line morphs into 
 ```tsx
 <Liveline
   mode="gauge"
-  data={[]}
   value={cpuPercent}
   min={0}
   max={100}
   color="#3257ee"
   formatValue={(v) => `${v.toFixed(0)}%`}
+/>
+```
+
+### Donut (live proportions)
+
+```tsx
+<Liveline
+  mode="donut"
+  segments={[
+    { id: 'yes', value: yesShares, label: 'Yes', color: '#3b82f6' },
+    { id: 'no', value: noShares, label: 'No', color: '#ef4444' },
+  ]}
+  theme="dark"
+  formatValue={(v) => v.toFixed(0)}
+/>
+```
+
+### Scatter (sparse events)
+
+```tsx
+<Liveline
+  mode="scatter"
+  data={trades}
+  value={lastTrade}
+  color="#3b82f6"
+  window={60}
+  dotSize={4}
 />
 ```
 

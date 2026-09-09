@@ -14,8 +14,8 @@ const defaultFormatTime = (t: number) => {
 }
 
 export function Liveline({
-  data,
-  value,
+  data = [],
+  value = 0,
   series: seriesProp,
   theme = 'dark',
   color = '#3b82f6',
@@ -60,6 +60,8 @@ export function Liveline({
   liveBar,
   min,
   max,
+  segments,
+  dotSize,
   onModeChange,
   onSeriesToggle,
   seriesToggleCompact = false,
@@ -107,14 +109,18 @@ export function Liveline({
     }))
   }, [seriesProp, seriesPalettes, theme])
 
-  // Mode-aware defaults — gauge is radial: no grid, badge, momentum, fill,
-  // or scrub; bars have no momentum arrows or area fill.
+  // Mode-aware defaults — gauge/donut are radial: no grid, badge, momentum,
+  // or fill; bars/scatter have no momentum arrows or area fill. Donut keeps
+  // scrub listeners on for segment hover (it does its own hit-testing).
   const isGauge = mode === 'gauge'
+  const isDonut = mode === 'donut'
+  const isRadial = isGauge || isDonut
   const isBars = mode === 'bars'
-  const effGrid = isGauge ? false : grid
-  const effBadge = isGauge ? false : badge
-  const effMomentum = (isGauge || isBars) ? false : momentum
-  const effFill = (isGauge || isBars) ? false : fill
+  const isScatter = mode === 'scatter'
+  const effGrid = isRadial ? false : grid
+  const effBadge = isRadial ? false : badge
+  const effMomentum = (isRadial || isBars || isScatter) ? false : momentum
+  const effFill = (isRadial || isBars || isScatter) ? false : fill
   const effScrub = isGauge ? false : scrub
 
   // Resolve momentum prop: boolean enables auto-detect, string overrides
@@ -123,7 +129,7 @@ export function Liveline({
     typeof effMomentum === 'string' ? effMomentum : undefined
 
   const defaultRight = effBadge ? 80 : effGrid ? 54 : 12
-  const pad = isGauge
+  const pad = isRadial
     ? {
         top: paddingOverride?.top ?? 16,
         right: paddingOverride?.right ?? 16,
@@ -245,6 +251,8 @@ export function Liveline({
     liveBar,
     min,
     max,
+    segments,
+    dotSize,
     multiSeries,
     isMultiSeries,
     hiddenSeriesIds: hiddenSeries,
