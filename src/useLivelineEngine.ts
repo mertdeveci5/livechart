@@ -1,11 +1,11 @@
 import { useRef, useEffect, useCallback } from 'react'
-import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint, DonutSegment, RadarMetric } from './types'
+import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint, DonutSegment, RadarMetric, StackSeries } from './types'
 import { lerp } from './math/lerp'
-import { computeRange, computeBarsRange, normalizeGaugeValue } from './math/range'
+import { computeRange, computeBarsRange, computeStackedRange, normalizeGaugeValue } from './math/range'
 import { detectMomentum } from './math/momentum'
 import { interpolateAtTime } from './math/interpolate'
 import { getDpr, applyDpr } from './canvas/dpr'
-import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, drawDonutFrame, drawScatterFrame, drawDepthFrame, drawRadarFrame, FADE_EDGE_WIDTH } from './draw'
+import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, drawDonutFrame, drawScatterFrame, drawDepthFrame, drawRadarFrame, drawStackedFrame, FADE_EDGE_WIDTH } from './draw'
 import type { DonutSegmentDraw } from './draw/donut'
 import type { RadarAxisDraw } from './draw/radar'
 import { radarGeometry } from './draw/radar'
@@ -52,7 +52,7 @@ interface EngineConfig {
   emptyText?: string
 
   // Chart type
-  mode: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'
+  mode: 'line' | 'candle' | 'bars' | 'stacked' | 'combo' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'
   candles?: CandlePoint[]
   candleWidth?: number
   liveCandle?: CandlePoint
@@ -60,10 +60,13 @@ interface EngineConfig {
   lineData?: LivelinePoint[]
   lineValue?: number
 
-  // Bars mode
+  // Bars mode (bars also underlay combo mode)
   bars?: BarPoint[]
   barWidth?: number
   liveBar?: BarPoint
+
+  // Stacked bars mode
+  stacks?: StackSeries[]
 
   // Gauge mode
   min?: number
@@ -709,6 +712,11 @@ export function useLivelineEngine(
   // --- Radar mode refs ---
   const radarStateRef = useRef<Map<string, { frac: number; alpha: number; expand: number }>>(new Map())
 
+  // --- Stacked bars mode refs ---
+  const stackLiveRef = useRef<Map<string, { time: number; value: number; birth: number }>>(new Map())
+  const pausedStacksRef = useRef<StackSeries[] | null>(null)
+  const lastStacksRef = useRef<{ time: number; values: number[] }[]>([])
+
   // Create badge DOM elements (once, appended to container)
   useEffect(() => {
     const container = containerRef.current
@@ -888,6 +896,8 @@ export function useLivelineEngine(
     const isScatter = cfg.mode === 'scatter'
     const isDepth = cfg.mode === 'depth'
     const isRadar = cfg.mode === 'radar'
+    const isStacked = cfg.mode === 'stacked'
+    const isCombo = cfg.mode === 'combo'
 
     if (isCandle) {
       if (cfg.paused && pausedCandlesRef.current === null && (cfg.candles?.length ?? 0) > 0) {
@@ -902,7 +912,7 @@ export function useLivelineEngine(
         pausedLineDataRef.current = null
         pausedLineValueRef.current = null
       }
-    } else if (isBars) {
+    } else if (isBars || isCombo) {
       if (cfg.paused && pausedBarsRef.current === null && (cfg.bars?.length ?? 0) > 0) {
         pausedBarsRef.current = cfg.bars!.slice()
         pausedLiveBarRef.current = cfg.liveBar ?? null
@@ -910,6 +920,17 @@ export function useLivelineEngine(
       if (!cfg.paused) {
         pausedBarsRef.current = null
         pausedLiveBarRef.current = null
+      }
+    } else if (isStacked) {
+      if (cfg.paused && pausedStacksRef.current === null && (cfg.stacks?.length ?? 0) > 0) {
+        pausedStacksRef.current = cfg.stacks!.map(s => ({
+          ...s,
+          bars: s.bars.slice(),
+          liveBar: s.liveBar ? { ...s.liveBar } : undefined,
+        }))
+      }
+      if (!cfg.paused) {
+        pausedStacksRef.current = null
       }
     } else if (cfg.isMultiSeries && cfg.multiSeries) {
       if (cfg.paused && pausedMultiDataRef.current === null) {
@@ -931,7 +952,7 @@ export function useLivelineEngine(
       }
     }
 
-    const points = (isCandle || isBars || isGauge || isDonut || isDepth || isRadar) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
+    const points = (isCandle || isBars || isGauge || isDonut || isDepth || isRadar || isStacked) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
     const effectiveCandles = isCandle ? (pausedCandlesRef.current ?? (cfg.candles ?? [])) : ([] as CandlePoint[])
     const effectiveBars = isBars ? (pausedBarsRef.current ?? (cfg.bars ?? [])) : ([] as BarPoint[])
     const hasMultiData = cfg.isMultiSeries && cfg.multiSeries ? cfg.multiSeries.some(s => s.data.length >= 2) : false
@@ -941,6 +962,7 @@ export function useLivelineEngine(
       : isDepth ? (!cfg.loading && ((cfg.orderbookData?.bids.length ?? 0) > 0 || (cfg.orderbookData?.asks.length ?? 0) > 0))
       : isCandle ? effectiveCandles.length >= 2
       : isBars ? (effectiveBars.length >= 1 || cfg.liveBar != null || pausedLiveBarRef.current != null)
+      : isStacked ? ((cfg.stacks ?? []).some(s => s.bars.length >= 1 || s.liveBar != null))
       : (hasMultiData || points.length >= 2)
     const pad = cfg.padding
     const chartH = h - pad.top - pad.bottom
@@ -1008,6 +1030,8 @@ export function useLivelineEngine(
       // Candle stash updated inside candle pipeline after computing visible
     } else if (isBars) {
       useStash = !hasData && chartReveal > 0.005 && lastBarsRef.current.length > 0
+    } else if (isStacked) {
+      useStash = !hasData && chartReveal > 0.005 && lastStacksRef.current.length > 0
     } else if (isDepth) {
       useStash = !hasData && chartReveal > 0.005 && lastDepthRef.current !== null
     } else if (isGauge || isDonut || isRadar) {
@@ -1695,6 +1719,185 @@ export function useLivelineEngine(
       const barsValEl = cfg.valueDisplayRef?.current
       if (barsValEl && effectiveLive) {
         barsValEl.textContent = cfg.formatValue(effectiveLive.value)
+      }
+
+    } else if (isStacked) {
+      // ═══════════════════════════════════════════════════════
+      // STACKED BARS MODE PIPELINE
+      // ═══════════════════════════════════════════════════════
+
+      const stacks = pausedStacksRef.current ?? cfg.stacks ?? []
+      const barWidthSecs = cfg.barWidth ?? 1
+      const stackBuffer = cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE
+
+      if (hasData) frozenNowRef.current = Date.now() / 1000 - timeDebtRef.current
+      const now = (hasData || chartReveal < 0.005)
+        ? Date.now() / 1000 - timeDebtRef.current
+        : frozenNowRef.current
+
+      // Per-series live bar lerp
+      const liveMap = stackLiveRef.current
+      const seriesIds = new Set(stacks.map(s => s.id))
+      for (const id of liveMap.keys()) {
+        if (!seriesIds.has(id)) liveMap.delete(id)
+      }
+      let liveTime = -1
+      for (const s of stacks) {
+        const raw = s.liveBar
+        if (!raw) continue
+        let st = liveMap.get(s.id)
+        if (!st || st.time !== raw.time) {
+          st = { time: raw.time, value: raw.value, birth: 0 }
+          liveMap.set(s.id, st)
+        } else {
+          st.value = lerp(st.value, raw.value, CANDLE_LERP_SPEED, pausedDt)
+        }
+        st.birth = lerp(st.birth, 1, 0.2, pausedDt)
+        if (st.birth > 0.99) st.birth = 1
+        if (st.time > liveTime) liveTime = st.time
+      }
+      const liveBirth = liveTime > 0
+        ? Math.min(...stacks.map(s => liveMap.get(s.id)?.birth ?? 1))
+        : 1
+
+      // Build aligned buckets (all series share bucket times)
+      const buckets: { time: number; values: number[] }[] = []
+      const base = stacks[0]?.bars ?? []
+      for (let i = 0; i < base.length; i++) {
+        buckets.push({ time: base[i].time, values: stacks.map(s => Math.max(0, s.bars[i]?.value ?? 0)) })
+      }
+      if (liveTime > 0) {
+        buckets.push({ time: liveTime, values: stacks.map(s => Math.max(0, liveMap.get(s.id)?.value ?? 0)) })
+      }
+
+      // Window transition
+      const transition = windowTransitionRef.current
+      const windowResult = updateCandleWindowTransition(
+        cfg.windowSecs, transition, displayWindowRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        now_ms, now, buckets, undefined, barWidthSecs, stackBuffer,
+        (items) => computeStackedRange(items),
+      )
+      displayWindowRef.current = windowResult.windowSecs
+      const windowSecs = windowResult.windowSecs
+      const windowTransProgress = windowResult.windowTransProgress
+      const isWindowTransitioning = transition.startMs > 0
+
+      const rightEdge = now + windowSecs * stackBuffer
+      const leftEdge = rightEdge - windowSecs
+
+      const visible: { time: number; values: number[] }[] = []
+      for (const b of buckets) {
+        if (b.time + barWidthSecs >= leftEdge && b.time <= rightEdge) visible.push(b)
+      }
+
+      if (hasData) lastStacksRef.current = visible
+      const effectiveVisible = useStash ? lastStacksRef.current : visible
+
+      // Range — zero baseline to tallest summed bucket
+      const chartW = w - pad.left - pad.right
+      const computed = effectiveVisible.length > 0
+        ? computeStackedRange(effectiveVisible)
+        : { min: 0, max: displayMaxRef.current || 1 }
+      const rangeResult = updateCandleRange(
+        computed, rangeInitedRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        isWindowTransitioning, windowTransProgress, transition,
+        chartH, pausedDt,
+      )
+      rangeInitedRef.current = rangeResult.rangeInited
+      displayMinRef.current = rangeResult.displayMin
+      displayMaxRef.current = rangeResult.displayMax
+      const { minVal, maxVal, valRange } = rangeResult
+
+      const layout: ChartLayout = {
+        w, h, pad,
+        chartW, chartH,
+        leftEdge, rightEdge,
+        minVal, maxVal, valRange,
+        toX: (t: number) => pad.left + ((t - leftEdge) / (rightEdge - leftEdge)) * chartW,
+        toY: (v: number) => pad.top + (1 - (v - minVal) / valRange) * chartH,
+      }
+
+      const colors = stacks.map((s, i) => s.color ?? SERIES_COLORS[i % SERIES_COLORS.length])
+
+      // Hover — magnetic snap to bucket center
+      const hoverPx = hoverXRef.current
+      let hoveredBucket: { time: number; values: number[] } | null = null
+      let drawHoverX: number | null = null
+      let drawHoverTime = 0
+      let isActiveHover = false
+      if (hoverPx !== null && hoverPx >= pad.left && hoverPx <= w - pad.right) {
+        const bucket = pointAtX(effectiveVisible, hoverPx, barWidthSecs, layout)
+        if (bucket) {
+          hoveredBucket = bucket
+          drawHoverX = layout.toX(bucket.time + barWidthSecs / 2)
+          drawHoverTime = bucket.time + barWidthSecs / 2
+          isActiveHover = true
+          lastHoverRef.current = { x: drawHoverX, value: 0, time: drawHoverTime }
+        }
+      }
+      const scrubTarget = isActiveHover ? 1 : 0
+      scrubAmountRef.current = lerp(scrubAmountRef.current, scrubTarget, 0.12, dt)
+      if (scrubAmountRef.current < 0.01) scrubAmountRef.current = 0
+      if (scrubAmountRef.current > 0.99) scrubAmountRef.current = 1
+      const scrubAmount = scrubAmountRef.current
+      if (!isActiveHover && scrubAmount > 0 && lastHoverRef.current) {
+        drawHoverX = lastHoverRef.current.x
+        drawHoverTime = lastHoverRef.current.time
+        hoveredBucket = pointAtX(effectiveVisible, lastHoverRef.current.x, barWidthSecs, layout)
+      }
+
+      const hoverEntries = hoveredBucket
+        ? stacks.map((s, i) => ({ color: colors[i], label: s.label ?? s.id, value: hoveredBucket.values[i] ?? 0 }))
+        : []
+
+      drawStackedFrame(ctx, layout, cfg.palette, {
+        buckets: effectiveVisible,
+        barWidthSecs,
+        colors,
+        liveTime,
+        liveBirthAlpha: liveBirth,
+        chartReveal,
+        showGrid: cfg.showGrid,
+        scrubAmount,
+        hoverX: drawHoverX,
+        hoverTime: drawHoverX !== null ? drawHoverTime : null,
+        hoverEntries,
+        formatValue: cfg.formatValue,
+        formatTime: cfg.formatTime,
+        gridState: gridStateRef.current,
+        timeAxisState: timeAxisStateRef.current,
+        dt: pausedDt,
+        targetWindowSecs: cfg.windowSecs,
+        loadingAlpha,
+        showEmptyOverlay: !(cfg.loading ?? false) && loadingAlpha < 0.01,
+        emptyText: cfg.emptyText,
+        now_ms,
+      })
+
+      // Badge — tracks the live bucket total
+      const liveBucket = liveTime > 0 && buckets.length > 0 && buckets[buckets.length - 1].time === liveTime
+        ? buckets[buckets.length - 1]
+        : undefined
+      if (badgeRef.current) {
+        if (cfg.showBadge && liveBucket) {
+          const totalVal = liveBucket.values.reduce((s, v) => s + v, 0)
+          badgeYRef.current = updateBadgeDOM(
+            badgeRef.current, cfg, totalVal, layout, 'flat',
+            badgeYRef.current, badgeColorRef.current,
+            isWindowTransitioning, noMotion, ctx, pausedDt,
+            chartReveal,
+          )
+        } else {
+          badgeRef.current.container.style.display = 'none'
+        }
+      }
+
+      // Live value display — live bucket total
+      const stackValEl = cfg.valueDisplayRef?.current
+      if (stackValEl && liveBucket) {
+        stackValEl.textContent = cfg.formatValue(liveBucket.values.reduce((s, v) => s + v, 0))
       }
 
     } else if (isGauge) {
@@ -2629,6 +2832,58 @@ export function useLivelineEngine(
     lastHoverRef.current = hoverResult.lastHover
     const { hoverX: drawHoverX, hoverValue: drawHoverValue, hoverTime: drawHoverTime } = hoverResult
 
+    // Combo mode — volume bars underlay behind the line
+    let barsUnderlay: {
+      bars: BarPoint[]
+      barWidthSecs: number
+      liveTime: number
+      liveBirthAlpha: number
+      maxValue: number
+      heightRatio: number
+    } | undefined
+    if (isCombo) {
+      const effectiveBars = pausedBarsRef.current ?? (cfg.bars ?? [])
+      const rawLiveBar = pausedBarsRef.current ? (pausedLiveBarRef.current ?? undefined) : cfg.liveBar
+      const barWidthSecs = cfg.barWidth ?? 1
+
+      let smoothLiveBar: BarPoint | undefined
+      if (rawLiveBar) {
+        const prev = displayBarRef.current
+        if (!prev || prev.time !== rawLiveBar.time) {
+          displayBarRef.current = { time: rawLiveBar.time, value: rawLiveBar.value }
+          barBirthAlphaRef.current = 0
+        } else {
+          displayBarRef.current!.value = lerp(prev.value, rawLiveBar.value, CANDLE_LERP_SPEED, pausedDt)
+        }
+        barBirthAlphaRef.current = lerp(barBirthAlphaRef.current, 1, 0.2, pausedDt)
+        if (barBirthAlphaRef.current > 0.99) barBirthAlphaRef.current = 1
+        smoothLiveBar = displayBarRef.current!
+      } else {
+        displayBarRef.current = null
+        barBirthAlphaRef.current = 1
+      }
+
+      const visibleBars: BarPoint[] = []
+      for (const b of effectiveBars) {
+        if (b.time + barWidthSecs >= leftEdge && b.time <= rightEdge) visibleBars.push(b)
+      }
+      if (smoothLiveBar && smoothLiveBar.time + barWidthSecs >= leftEdge && smoothLiveBar.time <= rightEdge) {
+        visibleBars.push(smoothLiveBar)
+      }
+      let maxV = 0
+      for (const b of visibleBars) {
+        if (b.value > maxV) maxV = b.value
+      }
+      barsUnderlay = {
+        bars: visibleBars,
+        barWidthSecs,
+        liveTime: smoothLiveBar?.time ?? -1,
+        liveBirthAlpha: barBirthAlphaRef.current,
+        maxValue: maxV,
+        heightRatio: 0.32,
+      }
+    }
+
     // Compute swing magnitude for particles (recent velocity / visible range)
     const lookback = Math.min(5, visible.length - 1)
     const recentDelta = lookback > 0
@@ -2663,6 +2918,7 @@ export function useLivelineEngine(
       tooltipOutline: cfg.tooltipOutline,
       orderbookData: cfg.orderbookData,
       orderbookState: cfg.orderbookData ? orderbookStateRef.current : undefined,
+      barsUnderlay,
       particleState: cfg.degenOptions ? particleStateRef.current : undefined,
       particleOptions: cfg.degenOptions,
       swingMagnitude,

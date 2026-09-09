@@ -112,7 +112,7 @@ export interface LivelineProps {
   lineWidth?: number       // Stroke width of the main line in px (default: 2)
 
   // Chart type
-  mode?: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'  // (default: 'line')
+  mode?: 'line' | 'candle' | 'bars' | 'stacked' | 'combo' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'  // (default: 'line')
   candles?: CandlePoint[]         // OHLC candle data (required when mode='candle')
   candleWidth?: number            // Seconds per candle (required when mode='candle')
   liveCandle?: CandlePoint        // Current live candle with real-time OHLC
@@ -123,10 +123,13 @@ export interface LivelineProps {
   onSeriesToggle?: (id: string, visible: boolean) => void  // Multi-series toggle callback
   seriesToggleCompact?: boolean  // Show only colored dots (no labels) in series toggle (default: false)
 
-  // Bars mode
+  // Bars mode (bars also used as the volume underlay in combo mode)
   bars?: BarPoint[]               // Committed bar buckets (required when mode='bars')
-  barWidth?: number               // Seconds per bar bucket (required when mode='bars')
+  barWidth?: number               // Seconds per bar bucket (required when mode='bars'/'stacked'/'combo')
   liveBar?: BarPoint              // Current in-progress bar, updated every tick
+
+  // Stacked bars mode
+  stacks?: StackSeries[]          // Per-series buckets stacked from the zero baseline
 
   // Gauge mode
   min?: number                    // Gauge minimum value (default: 0)
@@ -171,6 +174,14 @@ export interface RadarMetric {
   label: string
   value: number
   max?: number   // per-metric max — falls back to the max prop, then 100
+}
+
+export interface StackSeries {
+  id: string
+  bars: BarPoint[]         // committed buckets — all series share the same bucket times
+  liveBar?: BarPoint       // current in-progress bucket for this series
+  color?: string           // segment color — falls back to the series color rotation
+  label?: string
 }
 
 export interface LivelinePalette {

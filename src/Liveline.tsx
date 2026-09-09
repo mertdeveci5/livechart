@@ -58,6 +58,7 @@ export function Liveline({
   bars,
   barWidth,
   liveBar,
+  stacks,
   min,
   max,
   segments,
@@ -120,11 +121,12 @@ export function Liveline({
   const isDepth = mode === 'depth'
   const isRadial = isGauge || isDonut || isRadar
   const isBars = mode === 'bars'
+  const isStacked = mode === 'stacked'
   const isScatter = mode === 'scatter'
   const effGrid = isRadial ? false : grid
   const effBadge = (isRadial || isDepth) ? false : badge
-  const effMomentum = (isRadial || isBars || isScatter || isDepth) ? false : momentum
-  const effFill = (isRadial || isBars || isScatter || isDepth) ? false : fill
+  const effMomentum = (isRadial || isBars || isStacked || isScatter || isDepth) ? false : momentum
+  const effFill = (isRadial || isBars || isStacked || isScatter || isDepth) ? false : fill
   const effScrub = isGauge ? false : scrub
 
   // Resolve momentum prop: boolean enables auto-detect, string overrides
@@ -260,6 +262,7 @@ export function Liveline({
     bars,
     barWidth,
     liveBar,
+    stacks,
     min,
     max,
     segments,

@@ -1,6 +1,6 @@
 # Livechart
 
-Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge, donut, and scatter modes, canvas-rendered, 60fps, zero CSS imports.
+Real-time animated charts for React. Line, multi-series, candlestick, bars, stacked bars, combo, gauge, donut, scatter, depth, and radar modes, canvas-rendered, 60fps, zero CSS imports.
 
 > **Fork of [liveline](https://github.com/benjitaylor/liveline) by Benji Taylor** — extended with more chart types in the same vein. Original code © Benji Taylor, MIT licensed (see [LICENSE](LICENSE)).
 
@@ -75,7 +75,7 @@ Only line, multi-series, and scatter modes use `data`/`value` — candle, bars, 
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `mode` | `'line' \| 'candle' \| 'bars' \| 'gauge' \| 'donut' \| 'scatter'` | `'line'` | Chart type |
+| `mode` | `'line' \| 'candle' \| 'bars' \| 'stacked' \| 'combo' \| 'gauge' \| 'donut' \| 'scatter' \| 'depth' \| 'radar'` | `'line'` | Chart type |
 | `candles` | `CandlePoint[]` | — | OHLC candle data `{ time, open, high, low, close }` |
 | `candleWidth` | `number` | — | Seconds per candle |
 | `liveCandle` | `CandlePoint` | — | Current in-progress candle with real-time OHLC |
@@ -97,6 +97,18 @@ The `onModeChange` prop renders a built-in line/candle toggle next to the time w
 | `liveBar` | `BarPoint` | — | Current in-progress bar, updated every tick |
 
 When `mode="bars"`, pass `bars` (committed buckets) and `liveBar` (the current bucket, updated every tick). Bars anchor to the zero baseline (negative values supported), slide with the time window, and the badge tracks the live bar value. `barWidth` sets the bucket size in seconds.
+
+**Stacked bars**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `stacks` | `StackSeries[]` | — | Per-series buckets `{ id, bars, liveBar?, color?, label? }` — all series share bucket times |
+
+When `mode="stacked"`, segments stack from the zero baseline, scrubbing snaps to the bucket and lists every series value, and the badge tracks the live bucket total. Segment colors fall back to the series rotation.
+
+**Combo (line + volume bars)**
+
+When `mode="combo"`, the line keeps everything from line mode (badge, momentum, scrub tooltip) and `bars`/`barWidth`/`liveBar` render as a subdued volume underlay scaled to the bottom third of the chart.
 
 **Gauge**
 
@@ -270,6 +282,33 @@ When `loading` flips to `false` with data present, the loading line morphs into 
   color="#4074fb"
   window={30}
   formatValue={(v) => v.toFixed(0)}
+/>
+```
+
+### Stacked bars
+
+```tsx
+<Liveline
+  mode="stacked"
+  barWidth={2}
+  stacks={[
+    { id: 'a', label: 'Alpha', bars: aBars, liveBar: aLive, color: '#548eff' },
+    { id: 'b', label: 'Beta', bars: bBars, liveBar: bLive, color: '#4074fb' },
+  ]}
+/>
+```
+
+### Combo (price over volume)
+
+```tsx
+<Liveline
+  mode="combo"
+  data={priceTicks}
+  value={price}
+  bars={volumeBars}
+  barWidth={2}
+  liveBar={liveVolume}
+  color="#3257ee"
 />
 ```
 

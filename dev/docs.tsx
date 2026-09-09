@@ -202,6 +202,53 @@ function Chart() {
 />`}</CodeBlock>
       </Section>
 
+      <Section label="Stacked bars" id="stacked">
+        <P>
+          Multiple bar series stacked from the zero baseline. All series share bucket times.
+          Scrubbing snaps to the bucket and shows every series value; the badge tracks the
+          live bucket total.
+        </P>
+        <Props
+          rows={[
+            ['stacks', 'StackSeries[]', '{ id, bars, liveBar?, color?, label? }[]'],
+            ['barWidth', 'number', 'Seconds per bucket (shared by all series)'],
+          ]}
+        />
+        <CodeBlock>{`<Liveline
+  mode="stacked"
+  barWidth={2}
+  stacks={[
+    { id: 'a', label: 'Alpha', bars: aBars, liveBar: aLive, color: '#548eff' },
+    { id: 'b', label: 'Beta', bars: bBars, liveBar: bLive, color: '#4074fb' },
+  ]}
+/>`}</CodeBlock>
+      </Section>
+
+      <Section label="Combo" id="combo">
+        <P>
+          Line over volume bars — the classic trading layout. The line keeps everything from
+          line mode (badge, momentum, scrub tooltip); bars render as a subdued underlay
+          scaled to the bottom third of the chart.
+        </P>
+        <Props
+          rows={[
+            ['data', 'LivelinePoint[]', 'Line points (price, rate, …)'],
+            ['value', 'number', 'Latest line value'],
+            ['bars', 'BarPoint[]', 'Volume buckets { time, value }'],
+            ['barWidth', 'number', 'Seconds per bucket'],
+            ['liveBar', 'BarPoint', 'Current in-progress bucket'],
+          ]}
+        />
+        <CodeBlock>{`<Liveline
+  mode="combo"
+  data={priceTicks}
+  value={price}
+  bars={volumeBars}
+  barWidth={2}
+  liveBar={liveVolume}
+/>`}</CodeBlock>
+      </Section>
+
       <Section label="Gauge" id="gauge">
         <P>
           A radial 240° arc for a single live value. Rounded caps, a live dot with pulse at

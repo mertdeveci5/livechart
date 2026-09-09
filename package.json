@@ -1,8 +1,8 @@
 {
   "name": "livechart-react",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Real-time animated charts for React \u2014 line, candlestick, and multi-series modes. Fork of liveline.",
+  "description": "Real-time animated charts for React \u2014 line, multi-series, candlestick, bars, stacked bars, combo, gauge, donut, scatter, depth, and radar. Fork of liveline.",
   "keywords": [
     "react",
     "chart",
@@ -13,7 +13,15 @@
     "candlestick",
     "ohlc",
     "multi-series",
-    "multi-line"
+    "multi-line",
+    "bar-chart",
+    "stacked-bars",
+    "combo-chart",
+    "gauge",
+    "donut-chart",
+    "scatter",
+    "depth-chart",
+    "radar-chart"
   ],
   "license": "MIT",
   "author": "Mert Deveci",

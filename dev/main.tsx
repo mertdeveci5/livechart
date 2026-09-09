@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
-import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment, RadarMetric } from 'liveline'
+import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment, RadarMetric, StackSeries } from 'liveline'
 import {
   PRIMARY, CHART_1, CHART_4, CHART_5, MUTED_BG, MUTED_FG, BORDER,
   HeroMark, Wordmark, Section, PageShell, Footer, Chip,
@@ -256,6 +256,45 @@ function useRadarData(tickMs = 700) {
   return metrics
 }
 
+/** Three aligned stacked-bar series sharing 2s buckets. */
+function useStackedData(tickMs = 100, barWidth = 2) {
+  const [stacks, setStacks] = useState<StackSeries[]>([])
+
+  useEffect(() => {
+    const now = Date.now() / 1000
+    const mk = (base: number) => {
+      const bars: BarPoint[] = []
+      for (let t = Math.floor((now - 60) / barWidth) * barWidth; t < now; t += barWidth) {
+        bars.push({ time: t, value: base + Math.random() * base + (Math.random() < 0.08 ? base : 0) })
+      }
+      return bars
+    }
+    const ref: StackSeries[] = [
+      { id: 'alpha', label: 'Alpha', color: PRIMARY, bars: mk(12), liveBar: { time: Math.floor(now / barWidth) * barWidth, value: 4 } },
+      { id: 'beta', label: 'Beta', color: CHART_4, bars: mk(9), liveBar: { time: Math.floor(now / barWidth) * barWidth, value: 3 } },
+      { id: 'gamma', label: 'Gamma', color: CHART_1, bars: mk(6), liveBar: { time: Math.floor(now / barWidth) * barWidth, value: 2 } },
+    ]
+    setStacks(ref.map((s) => ({ ...s })))
+
+    const id = setInterval(() => {
+      const t = Date.now() / 1000
+      const slot = Math.floor(t / barWidth) * barWidth
+      for (const s of ref) {
+        if (s.liveBar && slot > s.liveBar.time) {
+          s.bars = [...s.bars, s.liveBar].slice(-60)
+          s.liveBar = { time: slot, value: 1 + Math.random() * 3 }
+        } else if (s.liveBar) {
+          s.liveBar = { ...s.liveBar, value: s.liveBar.value + Math.random() * 2 }
+        }
+      }
+      setStacks(ref.map((s) => ({ ...s })))
+    }, tickMs)
+    return () => clearInterval(id)
+  }, [tickMs, barWidth])
+
+  return stacks
+}
+
 function useGaugeData(tickMs = 200) {
   const [value, setValue] = useState(62)
 
@@ -468,6 +507,39 @@ function ScatterChart() {
   )
 }
 
+function StackedChart() {
+  const stacks = useStackedData(100, 2)
+  return (
+    <Liveline
+      mode="stacked"
+      stacks={stacks}
+      barWidth={2}
+      theme="light"
+      window={30}
+      formatValue={(v) => v.toFixed(0)}
+    />
+  )
+}
+
+function ComboChart() {
+  const { data, value } = useLiveData('normal')
+  const { bars, live } = useBarsData(100, 2)
+  return (
+    <Liveline
+      mode="combo"
+      data={data}
+      value={value}
+      bars={bars}
+      barWidth={2}
+      liveBar={live ?? undefined}
+      color={CHART_5}
+      theme="light"
+      window={30}
+      formatValue={(v) => v.toFixed(1)}
+    />
+  )
+}
+
 function DepthChart() {
   const book = useDepthData(400)
   return (
@@ -509,8 +581,9 @@ function App() {
       <HeroMark />
       <Wordmark>Livechart</Wordmark>
       <p style={{ fontSize: 17, lineHeight: 1.6, color: MUTED_FG, maxWidth: 560, marginBottom: 20 }}>
-        Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge,
-        donut, scatter, depth, and radar — canvas-rendered at 60fps, zero dependencies, one accent color.
+        Real-time animated charts for React. Line, multi-series, candlestick, bars, stacked,
+        combo, gauge, donut, scatter, depth, and radar — canvas-rendered at 60fps, zero
+        dependencies, one accent color.
       </p>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <Chip>pnpm add livechart-react</Chip>
@@ -544,6 +617,12 @@ function App() {
           <Card label="Bars" href="docs.html#bars">
             <BarsChart />
           </Card>
+          <Card label="Stacked" href="docs.html#stacked">
+            <StackedChart />
+          </Card>
+          <Card label="Combo" href="docs.html#combo">
+            <ComboChart />
+          </Card>
           <Card label="Gauge" href="docs.html#gauge">
             <GaugeChart />
           </Card>
@@ -559,7 +638,6 @@ function App() {
           <Card label="Radar" href="docs.html#radar">
             <RadarChart />
           </Card>
-          <PlaceholderCard label="Heatmap — up next" />
         </div>
       </Section>
 

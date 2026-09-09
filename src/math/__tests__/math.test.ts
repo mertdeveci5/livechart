@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { lerp } from '../lerp'
-import { computeRange, computeBarsRange, normalizeGaugeValue } from '../range'
+import { computeRange, computeBarsRange, computeStackedRange, normalizeGaugeValue } from '../range'
 import { detectMomentum } from '../momentum'
 import { interpolateAtTime, nearestPointAtTime } from '../interpolate'
 import { niceTimeInterval } from '../intervals'
@@ -252,5 +252,30 @@ describe('nearestPointAtTime', () => {
 
   it('breaks ties toward the earlier point', () => {
     expect(nearestPointAtTime(pts, 15)?.time).toBe(10)
+  })
+})
+
+// -- computeStackedRange --
+
+describe('computeStackedRange', () => {
+  it('ranges from zero to the tallest summed bucket', () => {
+    const r = computeStackedRange([
+      { time: 0, values: [1, 2, 3] },
+      { time: 1, values: [5, 5] },
+    ])
+    expect(r.min).toBe(0)
+    expect(r.max).toBeGreaterThan(10)
+    expect(r.max).toBeLessThan(12)
+  })
+
+  it('clamps negative values out of the sum', () => {
+    const r = computeStackedRange([{ time: 0, values: [4, -2] }])
+    expect(r.max).toBeGreaterThan(4)
+    expect(r.max).toBeLessThan(5)
+  })
+
+  it('gives a nominal range for empty data', () => {
+    const r = computeStackedRange([])
+    expect(r.max).toBeGreaterThan(0)
   })
 })

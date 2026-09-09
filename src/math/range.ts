@@ -75,6 +75,23 @@ export function computeBarsRange(
   return { min, max }
 }
 
+/**
+ * Compute visible Y range for stacked bars — zero baseline to the tallest
+ * bucket's summed height (positive values only; negatives are clamped out).
+ */
+export function computeStackedRange(
+  buckets: { values: number[] }[],
+): { min: number; max: number } {
+  let max = 0
+  for (const b of buckets) {
+    let sum = 0
+    for (const v of b.values) sum += Math.max(0, v)
+    if (sum > max) max = sum
+  }
+  if (max <= 0) max = 1
+  return { min: 0, max: max * 1.08 }
+}
+
 /** Normalize a gauge value to 0–1 progress between min and max. */
 export function normalizeGaugeValue(value: number, min: number, max: number): number {
   const span = max - min

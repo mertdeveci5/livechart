@@ -9,7 +9,7 @@ import { drawTimeAxis, type TimeAxisState } from './timeAxis'
 import { drawOrderbook, type OrderbookState } from './orderbook'
 import { drawParticles, spawnOnSwing, type ParticleState } from './particles'
 import { drawCandlesticks, drawClosePrice, drawCandleCrosshair, drawLineModeCrosshair } from './candlestick'
-import { drawBars } from './bars'
+import { drawBars, drawStackedBars, drawStackedCrosshair, drawBarsUnderlay } from './bars'
 import { drawGauge } from './gauge'
 import { drawDonut, drawDonutLoading, drawDonutEmpty, type DonutSegmentDraw } from './donut'
 import { drawScatter } from './scatter'
@@ -59,6 +59,15 @@ export interface DrawOptions {
   tooltipOutline: boolean
   orderbookData?: OrderbookData
   orderbookState?: OrderbookState
+  /** Combo mode: subdued volume bars behind the line */
+  barsUnderlay?: {
+    bars: BarPoint[]
+    barWidthSecs: number
+    liveTime: number
+    liveBirthAlpha: number
+    maxValue: number
+    heightRatio: number
+  }
   particleState?: ParticleState
   particleOptions?: DegenOptions
   swingMagnitude: number
@@ -129,6 +138,24 @@ export function drawFrame(
     if (reveal < 1) ctx.globalAlpha = reveal
     drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude)
     ctx.restore()
+  }
+
+  // 2c. Combo bars underlay (behind line) — grows with reveal
+  if (opts.barsUnderlay && reveal > 0.01) {
+    const u = opts.barsUnderlay
+    const barAlpha = reveal < 1 ? revealRamp(0.15, 0.6) : 1
+    if (barAlpha > 0.01) {
+      const hs = reveal * reveal * (3 - 2 * reveal)
+      ctx.save()
+      if (barAlpha < 1) ctx.globalAlpha = barAlpha
+      drawBarsUnderlay(
+        ctx, layout, palette,
+        u.bars, u.barWidthSecs, u.liveTime, u.liveBirthAlpha,
+        u.maxValue, u.heightRatio, hs,
+        opts.scrubAmount > 0.05 ? opts.hoverX : null, opts.scrubAmount,
+      )
+      ctx.restore()
+    }
   }
 
   // 3. Line + fill (with scrub dimming + reveal morphing)
@@ -1120,5 +1147,118 @@ export function drawRadarFrame(
 
   if (opts.loadingAlpha > 0.01) {
     drawRadarLoading(ctx, w, h, pad, palette, opts.now_ms, opts.loadingAlpha)
+  }
+}
+
+// ─── Stacked bars draw orchestration ───────────────────────────────────────
+
+export interface StackedDrawOptions {
+  buckets: { time: number; values: number[] }[]
+  barWidthSecs: number
+  colors: string[]
+  liveTime: number
+  liveBirthAlpha: number
+  chartReveal: number
+  showGrid: boolean
+  scrubAmount: number
+  hoverX: number | null
+  hoverTime: number | null
+  hoverEntries: { color: string; label: string; value: number }[]
+  formatValue: (v: number) => string
+  formatTime: (t: number) => string
+  gridState: GridState
+  timeAxisState: TimeAxisState
+  dt: number
+  targetWindowSecs: number
+  loadingAlpha: number
+  showEmptyOverlay: boolean
+  emptyText?: string
+  now_ms: number
+}
+
+/**
+ * Stacked bars draw orchestrator — grid, baseline-stacked segments, time
+ * axis, multi-entry crosshair. Mirrors the bars frame's reveal: stacks grow
+ * from the baseline.
+ */
+export function drawStackedFrame(
+  ctx: CanvasRenderingContext2D,
+  layout: ChartLayout,
+  palette: LivelinePalette,
+  opts: StackedDrawOptions,
+): void {
+  const { w, h, pad, chartW, chartH } = layout
+  const reveal = opts.chartReveal
+
+  const revealRamp = (start: number, end: number) => {
+    const t = Math.max(0, Math.min(1, (reveal - start) / (end - start)))
+    return t * t * (3 - 2 * t)
+  }
+
+  // 1. Grid
+  const gridAlpha = revealRamp(0.25, 0.6)
+  if (opts.showGrid && gridAlpha > 0.01) {
+    ctx.save()
+    if (gridAlpha < 1) ctx.globalAlpha = gridAlpha
+    drawGrid(ctx, layout, palette, opts.formatValue, opts.gridState, opts.dt)
+    ctx.restore()
+  }
+
+  // 2. Stacked bars — heights scale with smoothstepped reveal
+  const heightScale = reveal * reveal * (3 - 2 * reveal)
+  const barsAlpha = reveal < 1 ? 0.15 + 0.85 * reveal : 1
+  if (barsAlpha > 0.01) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(pad.left - 1, pad.top, chartW + 2, chartH)
+    ctx.clip()
+    if (barsAlpha < 1) ctx.globalAlpha = barsAlpha
+    drawStackedBars(
+      ctx, layout,
+      opts.buckets, opts.barWidthSecs, opts.colors,
+      opts.liveTime, opts.liveBirthAlpha, heightScale,
+      opts.scrubAmount > 0.05 ? opts.hoverX : null, opts.scrubAmount,
+    )
+    ctx.restore()
+  }
+
+  // 3. Time axis
+  const timeAlpha = revealRamp(0.25, 0.6)
+  if (timeAlpha > 0.01) {
+    ctx.save()
+    if (timeAlpha < 1) ctx.globalAlpha = timeAlpha
+    drawTimeAxis(ctx, layout, palette, opts.targetWindowSecs, opts.targetWindowSecs, opts.formatTime, opts.timeAxisState, opts.dt)
+    ctx.restore()
+  }
+
+  // 4. Left edge fade
+  ctx.save()
+  ctx.globalCompositeOperation = 'destination-out'
+  const fadeGrad = ctx.createLinearGradient(pad.left, 0, pad.left + FADE_EDGE_WIDTH, 0)
+  fadeGrad.addColorStop(0, 'rgba(0, 0, 0, 1)')
+  fadeGrad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = fadeGrad
+  ctx.fillRect(0, 0, pad.left + FADE_EDGE_WIDTH, h)
+  ctx.restore()
+
+  // 5. Reverse morph empty overlay
+  if (opts.showEmptyOverlay) {
+    const bgAlpha = 1 - reveal
+    if (bgAlpha > 0.01) {
+      const bgEmptyAlpha = (1 - opts.loadingAlpha) * bgAlpha
+      if (bgEmptyAlpha > 0.01) {
+        drawEmpty(ctx, w, h, pad, palette, bgEmptyAlpha, opts.now_ms, true, opts.emptyText)
+      }
+    }
+  }
+
+  // 6. Stacked crosshair — per-series entries at the hovered bucket
+  if (opts.chartReveal > 0.7 && opts.hoverX !== null && opts.hoverTime !== null && opts.scrubAmount > 0.01) {
+    drawStackedCrosshair(
+      ctx, layout, palette,
+      opts.hoverX, opts.hoverTime, opts.hoverEntries,
+      opts.formatValue, opts.formatTime,
+      opts.scrubAmount,
+    )
   }
 }
