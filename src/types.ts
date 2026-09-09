@@ -112,7 +112,7 @@ export interface LivelineProps {
   lineWidth?: number       // Stroke width of the main line in px (default: 2)
 
   // Chart type
-  mode?: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter'  // (default: 'line')
+  mode?: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'  // (default: 'line')
   candles?: CandlePoint[]         // OHLC candle data (required when mode='candle')
   candleWidth?: number            // Seconds per candle (required when mode='candle')
   liveCandle?: CandlePoint        // Current live candle with real-time OHLC
@@ -138,6 +138,11 @@ export interface LivelineProps {
   // Scatter mode — uses data/value like line mode, drawn as unconnected dots
   dotSize?: number                // Scatter dot radius in px (default: 3.5)
 
+  // Depth mode — uses the orderbook prop: cumulative bid/ask areas over price
+
+  // Radar mode
+  metrics?: RadarMetric[]         // Live multi-axis metrics (required when mode='radar', min 3)
+
   className?: string
   style?: CSSProperties
 }
@@ -160,6 +165,12 @@ export interface DonutSegment {
   value: number
   label?: string
   color?: string   // segment color — falls back to the series color rotation
+}
+
+export interface RadarMetric {
+  label: string
+  value: number
+  max?: number   // per-metric max — falls back to the max prop, then 100
 }
 
 export interface LivelinePalette {

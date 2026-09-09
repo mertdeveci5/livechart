@@ -1,14 +1,17 @@
 import { useRef, useEffect, useCallback } from 'react'
-import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint, DonutSegment } from './types'
+import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint, BarPoint, DonutSegment, RadarMetric } from './types'
 import { lerp } from './math/lerp'
 import { computeRange, computeBarsRange, normalizeGaugeValue } from './math/range'
 import { detectMomentum } from './math/momentum'
 import { interpolateAtTime } from './math/interpolate'
 import { getDpr, applyDpr } from './canvas/dpr'
-import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, drawDonutFrame, drawScatterFrame, FADE_EDGE_WIDTH } from './draw'
+import { drawFrame, drawCandleFrame, drawMultiFrame, drawBarsFrame, drawGaugeFrame, drawDonutFrame, drawScatterFrame, drawDepthFrame, drawRadarFrame, FADE_EDGE_WIDTH } from './draw'
 import type { DonutSegmentDraw } from './draw/donut'
+import type { RadarAxisDraw } from './draw/radar'
+import { radarGeometry } from './draw/radar'
 import { SERIES_COLORS } from './theme'
 import { nearestPointAtTime } from './math/interpolate'
+import { computeDepthProfile, depthCumAt } from './math/depth'
 import type { MultiSeriesEntry } from './draw'
 import { drawLoading } from './draw/loading'
 import { drawEmpty } from './draw/empty'
@@ -49,7 +52,7 @@ interface EngineConfig {
   emptyText?: string
 
   // Chart type
-  mode: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter'
+  mode: 'line' | 'candle' | 'bars' | 'gauge' | 'donut' | 'scatter' | 'depth' | 'radar'
   candles?: CandlePoint[]
   candleWidth?: number
   liveCandle?: CandlePoint
@@ -71,6 +74,9 @@ interface EngineConfig {
 
   // Scatter mode
   dotSize?: number
+
+  // Radar mode
+  metrics?: RadarMetric[]
 
   // Multi-series mode
   multiSeries?: Array<{
@@ -107,6 +113,12 @@ const WINDOW_BUFFER = 0.05
 const WINDOW_BUFFER_NO_BADGE = 0.015
 const VALUE_SNAP_THRESHOLD = 0.001
 const ADAPTIVE_SPEED_BOOST = 0.2
+/** Compact size formatter for depth mode's cumulative-size axis. */
+const defaultFormatSize = (v: number) =>
+  v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
+    : v >= 1_000 ? `${(v / 1_000).toFixed(1)}K`
+    : v.toFixed(v < 10 ? 2 : 0)
+
 const MOMENTUM_GREEN: [number, number, number] = [34, 197, 94]
 const MOMENTUM_RED: [number, number, number] = [239, 68, 68]
 const CHART_REVEAL_SPEED = 0.14     // data → loading/empty (reverse)
@@ -689,6 +701,14 @@ export function useLivelineEngine(
   const donutStateRef = useRef<Map<string, { frac: number; alpha: number; expand: number; color: string }>>(new Map())
   const donutHoverRef = useRef<string | null>(null)
 
+  // --- Depth mode refs ---
+  const depthLevelsRef = useRef<Map<string, number>>(new Map())  // "b99.5" → lerped cum
+  const depthXRef = useRef({ min: 0, max: 1, inited: false })
+  const lastDepthRef = useRef<{ bids: [number, number][]; asks: [number, number][]; midPrice: number; xMin: number; xMax: number; maxCum: number } | null>(null)
+
+  // --- Radar mode refs ---
+  const radarStateRef = useRef<Map<string, { frac: number; alpha: number; expand: number }>>(new Map())
+
   // Create badge DOM elements (once, appended to container)
   useEffect(() => {
     const container = containerRef.current
@@ -866,6 +886,8 @@ export function useLivelineEngine(
     const isGauge = cfg.mode === 'gauge'
     const isDonut = cfg.mode === 'donut'
     const isScatter = cfg.mode === 'scatter'
+    const isDepth = cfg.mode === 'depth'
+    const isRadar = cfg.mode === 'radar'
 
     if (isCandle) {
       if (cfg.paused && pausedCandlesRef.current === null && (cfg.candles?.length ?? 0) > 0) {
@@ -909,12 +931,14 @@ export function useLivelineEngine(
       }
     }
 
-    const points = (isCandle || isBars || isGauge || isDonut) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
+    const points = (isCandle || isBars || isGauge || isDonut || isDepth || isRadar) ? ([] as LivelinePoint[]) : (pausedDataRef.current ?? cfg.data)
     const effectiveCandles = isCandle ? (pausedCandlesRef.current ?? (cfg.candles ?? [])) : ([] as CandlePoint[])
     const effectiveBars = isBars ? (pausedBarsRef.current ?? (cfg.bars ?? [])) : ([] as BarPoint[])
     const hasMultiData = cfg.isMultiSeries && cfg.multiSeries ? cfg.multiSeries.some(s => s.data.length >= 2) : false
     const hasData = isGauge ? true
       : isDonut ? true
+      : isRadar ? true
+      : isDepth ? (!cfg.loading && ((cfg.orderbookData?.bids.length ?? 0) > 0 || (cfg.orderbookData?.asks.length ?? 0) > 0))
       : isCandle ? effectiveCandles.length >= 2
       : isBars ? (effectiveBars.length >= 1 || cfg.liveBar != null || pausedLiveBarRef.current != null)
       : (hasMultiData || points.length >= 2)
@@ -954,9 +978,11 @@ export function useLivelineEngine(
 
     // --- Chart reveal (loading/empty → data morph) ---
     // Donut has its own in-pipeline loading/empty states: reveal tracks
-    // whether any segment has a positive value.
+    // whether any segment has a positive value. Radar: needs ≥3 metrics.
     const revealTarget = isDonut
       ? ((!cfg.loading && (cfg.segments ?? []).some(s => s.value > 0)) ? 1 : 0)
+      : isRadar
+      ? ((!cfg.loading && (cfg.metrics ?? []).length >= 3) ? 1 : 0)
       : (!cfg.loading && hasData) ? 1 : 0
     chartRevealRef.current = noMotion
       ? revealTarget
@@ -982,7 +1008,9 @@ export function useLivelineEngine(
       // Candle stash updated inside candle pipeline after computing visible
     } else if (isBars) {
       useStash = !hasData && chartReveal > 0.005 && lastBarsRef.current.length > 0
-    } else if (isGauge || isDonut) {
+    } else if (isDepth) {
+      useStash = !hasData && chartReveal > 0.005 && lastDepthRef.current !== null
+    } else if (isGauge || isDonut || isRadar) {
       useStash = false
     } else {
       // Multi-series stash
@@ -1984,6 +2012,243 @@ export function useLivelineEngine(
       if (scatterValEl) {
         scatterValEl.textContent = cfg.formatValue(smoothValue)
       }
+
+    } else if (isDepth) {
+      // ═══════════════════════════════════════════════════════
+      // DEPTH MODE PIPELINE (price on X, cumulative size on Y)
+      // ═══════════════════════════════════════════════════════
+
+      const book = cfg.orderbookData ?? { bids: [] as [number, number][], asks: [] as [number, number][] }
+      const profile = computeDepthProfile(book)
+
+      // Lerp per-level cumulative values by price key; stale levels shrink out
+      const levels = depthLevelsRef.current
+      let lerpedBids: [number, number][] = []
+      let lerpedAsks: [number, number][] = []
+      let midPrice: number
+      let xMin: number
+      let xMax: number
+      let maxCum: number
+
+      if (useStash && lastDepthRef.current) {
+        lerpedBids = lastDepthRef.current.bids
+        lerpedAsks = lastDepthRef.current.asks
+        midPrice = lastDepthRef.current.midPrice
+        xMin = lastDepthRef.current.xMin
+        xMax = lastDepthRef.current.xMax
+        maxCum = lastDepthRef.current.maxCum
+      } else {
+        const targets = new Map<string, number>()
+        if (profile) {
+          for (const [p, c] of profile.bids) targets.set(`b${p}`, c)
+          for (const [p, c] of profile.asks) targets.set(`a${p}`, c)
+        }
+        for (const [k, t] of targets) {
+          const cur = levels.get(k) ?? 0
+          let next = noMotion ? t : lerp(cur, t, 0.15, pausedDt)
+          if (Math.abs(next - t) < 0.005) next = t
+          levels.set(k, next)
+        }
+        for (const [k, v] of levels) {
+          if (!targets.has(k)) {
+            const next = noMotion ? 0 : lerp(v, 0, 0.15, pausedDt)
+            if (next < 0.01) levels.delete(k)
+            else levels.set(k, next)
+          }
+        }
+
+        for (const [k, v] of levels) {
+          const price = parseFloat(k.slice(1))
+          if (k[0] === 'b') lerpedBids.push([price, v])
+          else lerpedAsks.push([price, v])
+        }
+        lerpedBids.sort((a, b) => a[0] - b[0])
+        lerpedAsks.sort((a, b) => a[0] - b[0])
+
+        // X range (price) — lerped toward the profile's span
+        const dx = depthXRef.current
+        if (profile) {
+          if (!dx.inited) {
+            dx.min = profile.minPrice
+            dx.max = profile.maxPrice
+            dx.inited = true
+          } else {
+            dx.min = noMotion ? profile.minPrice : lerp(dx.min, profile.minPrice, 0.15, pausedDt)
+            dx.max = noMotion ? profile.maxPrice : lerp(dx.max, profile.maxPrice, 0.15, pausedDt)
+          }
+        }
+        midPrice = profile?.midPrice ?? (dx.min + dx.max) / 2
+        xMin = dx.min
+        xMax = dx.max
+        maxCum = profile?.maxCum ?? 1
+
+        if (hasData && profile) {
+          lastDepthRef.current = { bids: lerpedBids, asks: lerpedAsks, midPrice, xMin, xMax, maxCum }
+        }
+      }
+
+      // Y range (cumulative size) — zero-baseline, smoothed
+      const chartW = w - pad.left - pad.right
+      const computed = { min: 0, max: maxCum * 1.08 || 1 }
+      const rangeResult = updateCandleRange(
+        computed, rangeInitedRef.current,
+        displayMinRef.current, displayMaxRef.current,
+        false, 0, windowTransitionRef.current,
+        chartH, pausedDt,
+      )
+      rangeInitedRef.current = rangeResult.rangeInited
+      displayMinRef.current = rangeResult.displayMin
+      displayMaxRef.current = rangeResult.displayMax
+      const { minVal, maxVal, valRange } = rangeResult
+
+      const layout: ChartLayout = {
+        w, h, pad,
+        chartW, chartH,
+        leftEdge: xMin, rightEdge: xMax,
+        minVal, maxVal, valRange,
+        toX: (p: number) => pad.left + ((p - xMin) / (xMax - xMin || 1)) * chartW,
+        toY: (v: number) => pad.top + (1 - (v - minVal) / valRange) * chartH,
+      }
+
+      // Hover — price at cursor, side by mid, cumulative size from lerped curve
+      const hoverPx = hoverXRef.current
+      let hoverPrice: number | null = null
+      let hoverCum: number | null = null
+      let hoverSide: 'bid' | 'ask' | null = null
+      let isActiveHover = false
+      if (hoverPx !== null && hoverPx >= pad.left && hoverPx <= w - pad.right) {
+        const price = xMin + ((hoverPx - pad.left) / chartW) * (xMax - xMin)
+        const side: 'bid' | 'ask' = price <= midPrice ? 'bid' : 'ask'
+        hoverPrice = price
+        hoverSide = side
+        hoverCum = depthCumAt(side === 'bid' ? lerpedBids : lerpedAsks, price)
+        isActiveHover = true
+        lastHoverRef.current = { x: hoverPx, value: hoverCum, time: price }
+      }
+      const scrubTarget = isActiveHover ? 1 : 0
+      scrubAmountRef.current = lerp(scrubAmountRef.current, scrubTarget, 0.12, dt)
+      if (scrubAmountRef.current < 0.01) scrubAmountRef.current = 0
+      if (scrubAmountRef.current > 0.99) scrubAmountRef.current = 1
+      const scrubAmount = scrubAmountRef.current
+      if (!isActiveHover && scrubAmount > 0 && lastHoverRef.current) {
+        const price = lastHoverRef.current.time
+        const side: 'bid' | 'ask' = price <= midPrice ? 'bid' : 'ask'
+        hoverPrice = price
+        hoverSide = side
+        hoverCum = depthCumAt(side === 'bid' ? lerpedBids : lerpedAsks, price)
+      }
+
+      drawDepthFrame(ctx, layout, cfg.palette, {
+        bids: lerpedBids,
+        asks: lerpedAsks,
+        midPrice,
+        chartReveal,
+        showGrid: cfg.showGrid,
+        hoverPrice,
+        hoverCum,
+        hoverSide,
+        scrubAmount,
+        formatValue: cfg.formatValue,
+        formatSize: defaultFormatSize,
+        gridState: gridStateRef.current,
+        dt: pausedDt,
+        loadingAlpha,
+        showEmptyOverlay: revealTarget === 0 && !(cfg.loading ?? false),
+        emptyText: cfg.emptyText,
+        now_ms,
+      })
+
+      // No badge in depth mode — the mid line is the anchor
+      if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+      const depthValEl = cfg.valueDisplayRef?.current
+      if (depthValEl) depthValEl.textContent = cfg.formatValue(midPrice)
+
+    } else if (isRadar) {
+      // ═══════════════════════════════════════════════════════
+      // RADAR MODE PIPELINE
+      // ═══════════════════════════════════════════════════════
+
+      const metrics = cfg.metrics ?? []
+      const hasMetrics = metrics.length >= 3
+      const defaultMax = cfg.max ?? 100
+
+      // Per-metric lerped state
+      const state = radarStateRef.current
+      const presentLabels = new Set(metrics.map(m => m.label))
+      for (const m of metrics) {
+        let st = state.get(m.label)
+        if (!st) {
+          st = { frac: 0, alpha: 0, expand: 0 }
+          state.set(m.label, st)
+        }
+        const target = normalizeGaugeValue(m.value, 0, m.max ?? defaultMax)
+        st.frac = noMotion ? target : lerp(st.frac, target, 0.14, pausedDt)
+        if (Math.abs(st.frac - target) < 0.0005) st.frac = target
+        st.alpha = noMotion ? 1 : lerp(st.alpha, 1, 0.14, pausedDt)
+        if (st.alpha > 0.99) st.alpha = 1
+      }
+      for (const [label, st] of state) {
+        if (!presentLabels.has(label)) {
+          st.alpha = noMotion ? 0 : lerp(st.alpha, 0, 0.14, pausedDt)
+          st.frac = noMotion ? 0 : lerp(st.frac, 0, 0.14, pausedDt)
+          if (st.alpha < 0.01 && st.frac < 0.001) state.delete(label)
+        }
+      }
+
+      // Hover — nearest vertex within 16px
+      const { cx, cy, radius } = radarGeometry(w, h, pad)
+      const hx = hoverXRef.current
+      const hy = hoverYRef.current
+      let hoveredIdx: number | null = null
+      if (hx !== null && hy !== null && chartReveal > 0.5 && hasMetrics) {
+        let best = 16
+        metrics.forEach((m, i) => {
+          const st = state.get(m.label)
+          if (!st) return
+          const a = -Math.PI / 2 + (i / metrics.length) * Math.PI * 2
+          const r = radius * st.frac
+          const px = cx + Math.cos(a) * r
+          const py = cy + Math.sin(a) * r
+          const d = Math.sqrt((hx - px) * (hx - px) + (hy - py) * (hy - py))
+          if (d < best) {
+            best = d
+            hoveredIdx = i
+          }
+        })
+      }
+
+      // Expand lerp
+      metrics.forEach((m, i) => {
+        const st = state.get(m.label)
+        if (!st) return
+        const target = i === hoveredIdx ? 1 : 0
+        st.expand = noMotion ? target : lerp(st.expand, target, 0.18, dt)
+        if (st.expand < 0.01) st.expand = 0
+        if (st.expand > 0.99) st.expand = 1
+      })
+
+      const axes: RadarAxisDraw[] = metrics.map((m) => {
+        const st = state.get(m.label)!
+        return {
+          label: m.label,
+          frac: st.frac,
+          alpha: st.alpha,
+          expand: st.expand,
+          valueText: cfg.formatValue(m.value),
+        }
+      })
+
+      drawRadarFrame(ctx, w, h, pad, cfg.palette, {
+        axes,
+        chartReveal,
+        now_ms,
+        hoveredIdx,
+        loadingAlpha,
+        empty: !hasMetrics,
+        emptyText: cfg.emptyText,
+      })
+
+      if (badgeRef.current) badgeRef.current.container.style.display = 'none'
 
     } else if ((cfg.isMultiSeries && cfg.multiSeries && cfg.multiSeries.length > 0) || useMultiStash) {
     // ═══════════════════════════════════════════════════════

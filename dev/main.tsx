@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
-import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment } from 'liveline'
+import type { LivelinePoint, CandlePoint, BarPoint, DonutSegment, RadarMetric } from 'liveline'
 import {
   PRIMARY, CHART_1, CHART_4, CHART_5, MUTED_BG, MUTED_FG, BORDER,
   HeroMark, Wordmark, Section, PageShell, Footer, Chip,
@@ -200,6 +200,60 @@ function useBarsData(tickMs = 100, barWidth = 2) {
   }, [tickMs, barWidth])
 
   return state
+}
+
+/** Orderbook depth — 12 levels per side, sizes jitter, mid drifts. */
+function useDepthData(tickMs = 400) {
+  const [book, setBook] = useState<{ bids: [number, number][]; asks: [number, number][] }>({
+    bids: [],
+    asks: [],
+  })
+
+  useEffect(() => {
+    let mid = 100
+    const gen = () => {
+      mid += (Math.random() - 0.5) * 0.3
+      const bids: [number, number][] = []
+      const asks: [number, number][] = []
+      for (let i = 0; i < 12; i++) {
+        const taper = 1 - i / 14
+        bids.push([mid - 0.5 - i * 0.5, (20 + Math.random() * 60) * taper])
+        asks.push([mid + 0.5 + i * 0.5, (20 + Math.random() * 60) * taper])
+      }
+      return { bids, asks }
+    }
+    setBook(gen())
+    const id = setInterval(() => setBook(gen()), tickMs)
+    return () => clearInterval(id)
+  }, [tickMs])
+
+  return book
+}
+
+/** Six slowly drifting radar metrics (0–100). */
+function useRadarData(tickMs = 700) {
+  const [metrics, setMetrics] = useState<RadarMetric[]>([
+    { label: 'Speed', value: 72 },
+    { label: 'Quality', value: 85 },
+    { label: 'Uptime', value: 64 },
+    { label: 'Volume', value: 48 },
+    { label: 'Reach', value: 58 },
+    { label: 'Accuracy', value: 77 },
+  ])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setMetrics((prev) =>
+        prev.map((m) => ({
+          ...m,
+          value: Math.max(20, Math.min(96, m.value + (Math.random() - 0.5) * 10)),
+        })),
+      )
+    }, tickMs)
+    return () => clearInterval(id)
+  }, [tickMs])
+
+  return metrics
 }
 
 function useGaugeData(tickMs = 200) {
@@ -414,16 +468,49 @@ function ScatterChart() {
   )
 }
 
+function DepthChart() {
+  const book = useDepthData(400)
+  return (
+    <Liveline
+      mode="depth"
+      orderbook={book}
+      theme="light"
+      formatValue={(v) => `$${v.toFixed(1)}`}
+    />
+  )
+}
+
+function RadarChart() {
+  const metrics = useRadarData(700)
+  return (
+    <Liveline
+      mode="radar"
+      metrics={metrics}
+      color={CHART_4}
+      theme="light"
+      formatValue={(v) => v.toFixed(0)}
+    />
+  )
+}
+
 // --- Page ---
 
 function App() {
+  // Scroll to hash anchors after React renders
+  useEffect(() => {
+    if (window.location.hash) {
+      const el = document.querySelector(window.location.hash)
+      if (el) el.scrollIntoView()
+    }
+  }, [])
+
   return (
     <PageShell>
       <HeroMark />
       <Wordmark>Livechart</Wordmark>
       <p style={{ fontSize: 17, lineHeight: 1.6, color: MUTED_FG, maxWidth: 560, marginBottom: 20 }}>
         Real-time animated charts for React. Line, multi-series, candlestick, bars, gauge,
-        donut, and scatter — canvas-rendered at 60fps, zero dependencies, one accent color.
+        donut, scatter, depth, and radar — canvas-rendered at 60fps, zero dependencies, one accent color.
       </p>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <Chip>pnpm add livechart-react</Chip>
@@ -466,7 +553,13 @@ function App() {
           <Card label="Scatter" href="docs.html#scatter">
             <ScatterChart />
           </Card>
-          <PlaceholderCard label="Depth — up next" />
+          <Card label="Depth" href="docs.html#depth">
+            <DepthChart />
+          </Card>
+          <Card label="Radar" href="docs.html#radar">
+            <RadarChart />
+          </Card>
+          <PlaceholderCard label="Heatmap — up next" />
         </div>
       </Section>
 

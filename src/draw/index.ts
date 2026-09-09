@@ -13,6 +13,8 @@ import { drawBars } from './bars'
 import { drawGauge } from './gauge'
 import { drawDonut, drawDonutLoading, drawDonutEmpty, type DonutSegmentDraw } from './donut'
 import { drawScatter } from './scatter'
+import { drawDepth } from './depth'
+import { drawRadar, drawRadarLoading, drawRadarEmpty, type RadarAxisDraw } from './radar'
 import { drawEmpty } from './empty'
 
 // Constants
@@ -1017,5 +1019,106 @@ export function drawScatterFrame(
         opts.tooltipOutline,
       )
     }
+  }
+}
+
+// ─── Depth draw orchestration ──────────────────────────────────────────────
+
+export interface DepthFrameOptions {
+  bids: [number, number][]
+  asks: [number, number][]
+  midPrice: number
+  chartReveal: number
+  showGrid: boolean
+  hoverPrice: number | null
+  hoverCum: number | null
+  hoverSide: 'bid' | 'ask' | null
+  scrubAmount: number
+  formatValue: (v: number) => string
+  formatSize: (v: number) => string
+  gridState: GridState
+  dt: number
+  loadingAlpha: number
+  showEmptyOverlay: boolean
+  emptyText?: string
+  now_ms: number
+}
+
+/**
+ * Depth draw orchestrator — size grid, cumulative areas, price axis, hover.
+ * layout carries price in its time slots (leftEdge=minPrice, rightEdge=maxPrice).
+ */
+export function drawDepthFrame(
+  ctx: CanvasRenderingContext2D,
+  layout: ChartLayout,
+  palette: LivelinePalette,
+  opts: DepthFrameOptions,
+): void {
+  const { w, h, pad } = layout
+  const reveal = opts.chartReveal
+
+  const revealRamp = (start: number, end: number) => {
+    const t = Math.max(0, Math.min(1, (reveal - start) / (end - start)))
+    return t * t * (3 - 2 * t)
+  }
+
+  // 1. Grid (Y = cumulative size, formatted via formatSize)
+  const gridAlpha = revealRamp(0.15, 0.6)
+  if (opts.showGrid && gridAlpha > 0.01) {
+    ctx.save()
+    if (gridAlpha < 1) ctx.globalAlpha = gridAlpha
+    drawGrid(ctx, layout, palette, opts.formatSize, opts.gridState, opts.dt)
+    ctx.restore()
+  }
+
+  // 2. Depth chart (areas, mid line, price axis, hover)
+  drawDepth(ctx, layout, palette, opts)
+
+  // 3. Reverse morph empty overlay
+  if (opts.showEmptyOverlay) {
+    const bgAlpha = 1 - reveal
+    if (bgAlpha > 0.01) {
+      const bgEmptyAlpha = (1 - opts.loadingAlpha) * bgAlpha
+      if (bgEmptyAlpha > 0.01) {
+        drawEmpty(ctx, w, h, pad, palette, bgEmptyAlpha, opts.now_ms, true, opts.emptyText)
+      }
+    }
+  }
+}
+
+// ─── Radar draw orchestration ──────────────────────────────────────────────
+
+export interface RadarFrameOptions {
+  axes: RadarAxisDraw[]
+  chartReveal: number
+  now_ms: number
+  hoveredIdx: number | null
+  loadingAlpha: number
+  empty: boolean
+  emptyText?: string
+}
+
+/** Radar draw orchestrator — polygon with loading/empty overlays. */
+export function drawRadarFrame(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  pad: { top: number; right: number; bottom: number; left: number },
+  palette: LivelinePalette,
+  opts: RadarFrameOptions,
+): void {
+  if (opts.empty) {
+    drawRadarEmpty(ctx, w, h, pad, palette, (1 - opts.chartReveal) * (1 - opts.loadingAlpha), opts.emptyText)
+  }
+
+  drawRadar(ctx, w, h, pad, palette, {
+    axes: opts.axes,
+    chartReveal: opts.chartReveal,
+    now_ms: opts.now_ms,
+    hoveredIdx: opts.hoveredIdx,
+  })
+
+  if (opts.loadingAlpha > 0.01) {
+    drawRadarLoading(ctx, w, h, pad, palette, opts.now_ms, opts.loadingAlpha)
   }
 }

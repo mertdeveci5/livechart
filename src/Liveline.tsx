@@ -62,6 +62,7 @@ export function Liveline({
   max,
   segments,
   dotSize,
+  metrics,
   onModeChange,
   onSeriesToggle,
   seriesToggleCompact = false,
@@ -109,18 +110,21 @@ export function Liveline({
     }))
   }, [seriesProp, seriesPalettes, theme])
 
-  // Mode-aware defaults — gauge/donut are radial: no grid, badge, momentum,
-  // or fill; bars/scatter have no momentum arrows or area fill. Donut keeps
-  // scrub listeners on for segment hover (it does its own hit-testing).
+  // Mode-aware defaults — gauge/donut/radar are radial: no grid, badge,
+  // momentum, or fill; bars/scatter have no momentum arrows or area fill;
+  // depth has no badge (the mid line is its anchor). Donut/radar keep scrub
+  // listeners on for hover hit-testing.
   const isGauge = mode === 'gauge'
   const isDonut = mode === 'donut'
-  const isRadial = isGauge || isDonut
+  const isRadar = mode === 'radar'
+  const isDepth = mode === 'depth'
+  const isRadial = isGauge || isDonut || isRadar
   const isBars = mode === 'bars'
   const isScatter = mode === 'scatter'
   const effGrid = isRadial ? false : grid
-  const effBadge = isRadial ? false : badge
-  const effMomentum = (isRadial || isBars || isScatter) ? false : momentum
-  const effFill = (isRadial || isBars || isScatter) ? false : fill
+  const effBadge = (isRadial || isDepth) ? false : badge
+  const effMomentum = (isRadial || isBars || isScatter || isDepth) ? false : momentum
+  const effFill = (isRadial || isBars || isScatter || isDepth) ? false : fill
   const effScrub = isGauge ? false : scrub
 
   // Resolve momentum prop: boolean enables auto-detect, string overrides
@@ -129,12 +133,19 @@ export function Liveline({
     typeof effMomentum === 'string' ? effMomentum : undefined
 
   const defaultRight = effBadge ? 80 : effGrid ? 54 : 12
-  const pad = isRadial
+  const pad = isGauge || isDonut
     ? {
         top: paddingOverride?.top ?? 16,
         right: paddingOverride?.right ?? 16,
         bottom: paddingOverride?.bottom ?? 16,
         left: paddingOverride?.left ?? 16,
+      }
+    : isRadar
+    ? {
+        top: paddingOverride?.top ?? 28,
+        right: paddingOverride?.right ?? 36,
+        bottom: paddingOverride?.bottom ?? 28,
+        left: paddingOverride?.left ?? 36,
       }
     : {
         top: paddingOverride?.top ?? 12,
@@ -253,6 +264,7 @@ export function Liveline({
     max,
     segments,
     dotSize,
+    metrics,
     multiSeries,
     isMultiSeries,
     hiddenSeriesIds: hiddenSeries,

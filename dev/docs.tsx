@@ -266,6 +266,48 @@ function Chart() {
 />`}</CodeBlock>
       </Section>
 
+      <Section label="Depth" id="depth">
+        <P>
+          Cumulative orderbook depth over price — bid and ask areas meeting at mid price.
+          Levels lerp as the book changes, the price axis rescales smoothly, and hovering
+          shows price and cumulative size. Reuses the same orderbook prop as the line-mode
+          orderbook overlay.
+        </P>
+        <Props
+          rows={[
+            ['orderbook', 'OrderbookData', '{ bids: [price, size][], asks: [price, size][] }'],
+            ['formatValue', '(v) => string', 'Price formatter for axis + tooltip'],
+          ]}
+        />
+        <CodeBlock>{`<Liveline
+  mode="depth"
+  orderbook={{ bids, asks }}
+  formatValue={(v) => '$' + v.toFixed(1)}
+/>`}</CodeBlock>
+      </Section>
+
+      <Section label="Radar" id="radar">
+        <P>
+          Live multi-axis metrics as a spider polygon. Radii lerp as values change, hovering
+          a vertex shows its value. Needs at least three metrics.
+        </P>
+        <Props
+          rows={[
+            ['metrics', 'RadarMetric[]', '{ label, value, max? }[] — max defaults to the max prop'],
+            ['max', 'number', 'Shared max for metrics without their own (default 100)'],
+          ]}
+        />
+        <CodeBlock>{`<Liveline
+  mode="radar"
+  metrics={[
+    { label: 'Speed', value: 72 },
+    { label: 'Quality', value: 85 },
+    { label: 'Uptime', value: 64 },
+  ]}
+  formatValue={(v) => v.toFixed(0)}
+/>`}</CodeBlock>
+      </Section>
+
       <Section label="Shared props" id="shared">
         <P>Every mode supports these unless noted otherwise.</P>
         <Props

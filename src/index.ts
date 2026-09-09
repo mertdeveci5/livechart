@@ -1,6 +1,6 @@
 export { Liveline } from './Liveline'
 export { LivelineTransition } from './LivelineTransition'
-export type { CandlePoint, BarPoint, DonutSegment } from './types'
+export type { CandlePoint, BarPoint, DonutSegment, RadarMetric } from './types'
 export type { LivelineTransitionProps } from './LivelineTransition'
 export type {
   LivelineProps,
