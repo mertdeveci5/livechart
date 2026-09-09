@@ -11,3 +11,4 @@ dev/multiline.*
 .env.*
 !.env.example
 .claude/settings.local.json
+dev/dist
