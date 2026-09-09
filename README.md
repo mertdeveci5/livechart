@@ -1,6 +1,6 @@
 # Livechart
 
-Real-time animated charts for React. Line, multi-series, and candlestick modes, canvas-rendered, 60fps, zero CSS imports.
+Real-time animated charts for React. Line, multi-series, candlestick, bars, and gauge modes, canvas-rendered, 60fps, zero CSS imports.
 
 > **Fork of [liveline](https://github.com/benjitaylor/liveline) by Benji Taylor** — extended with more chart types in the same vein. Original code © Benji Taylor, MIT licensed (see [LICENSE](LICENSE)).
 
@@ -73,7 +73,7 @@ The component fills its parent container. Set a height on the parent. Pass `data
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `mode` | `'line' \| 'candle'` | `'line'` | Chart type |
+| `mode` | `'line' \| 'candle' \| 'bars' \| 'gauge'` | `'line'` | Chart type |
 | `candles` | `CandlePoint[]` | — | OHLC candle data `{ time, open, high, low, close }` |
 | `candleWidth` | `number` | — | Seconds per candle |
 | `liveCandle` | `CandlePoint` | — | Current in-progress candle with real-time OHLC |
@@ -85,6 +85,25 @@ The component fills its parent container. Set a height on the parent. Pass `data
 When `mode="candle"`, pass `candles` (committed OHLC bars) and `liveCandle` (the current bar, updated every tick). `candleWidth` sets the time bucket in seconds. The `lineMode` prop smoothly morphs between candle and line views — candle bodies collapse to close price, then the line extends outward. Provide `lineData` and `lineValue` (tick-level resolution) for a smooth density transition during the morph.
 
 The `onModeChange` prop renders a built-in line/candle toggle next to the time window buttons.
+
+**Bars**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `bars` | `BarPoint[]` | — | Committed bar buckets `{ time, value }` |
+| `barWidth` | `number` | — | Seconds per bar bucket |
+| `liveBar` | `BarPoint` | — | Current in-progress bar, updated every tick |
+
+When `mode="bars"`, pass `bars` (committed buckets) and `liveBar` (the current bucket, updated every tick). Bars anchor to the zero baseline (negative values supported), slide with the time window, and the badge tracks the live bar value. `barWidth` sets the bucket size in seconds.
+
+**Gauge**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `min` | `number` | `0` | Gauge minimum value |
+| `max` | `number` | `100` | Gauge maximum value |
+
+When `mode="gauge"`, only `value` is required — a radial 240° arc sweeps to the smoothed value with a live dot at the tip, center value text, and min/max labels. Grid, badge, scrub, and momentum are disabled automatically. Loading shows a breathing arc.
 
 **Multi-series**
 
@@ -219,6 +238,36 @@ When `loading` flips to `false` with data present, the loading line morphs into 
     { label: '5m', secs: 300 },
   ]}
   onWindowChange={(secs) => console.log('window:', secs)}
+/>
+```
+
+### Bars (live volume)
+
+```tsx
+<Liveline
+  mode="bars"
+  data={[]}
+  value={0}
+  bars={bars}
+  barWidth={2}
+  liveBar={liveBar}
+  color="#4074fb"
+  window={30}
+  formatValue={(v) => v.toFixed(0)}
+/>
+```
+
+### Gauge (single live value)
+
+```tsx
+<Liveline
+  mode="gauge"
+  data={[]}
+  value={cpuPercent}
+  min={0}
+  max={100}
+  color="#3257ee"
+  formatValue={(v) => `${v.toFixed(0)}%`}
 />
 ```
 
